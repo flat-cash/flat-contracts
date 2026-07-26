@@ -1,0 +1,20 @@
+# Compiler output
+out/
+cache/
+artifacts/
+
+# Dependencies
+node_modules/
+lib/
+
+# Environment
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
