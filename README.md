@@ -1,12 +1,12 @@
 # FLAT Protocol Smart Contracts
 
-Verified Solidity source code for all deployed FLAT Protocol contracts on **Ethereum Mainnet**.
+Verified Solidity source code and deployment evidence for FLAT Protocol contracts on **Ethereum Mainnet**. Source-verification status is recorded per contract.
 
 > *Mathematica Inevitabilis Est* — The math is inevitable.
 
 ## Overview
 
-FLAT Protocol is a CPI-pegged stablecoin system with irreversible supply absorption, private transfer infrastructure, and custodial vaults for the FlatID account system. All contracts are verified on Etherscan and immutable where noted.
+FLAT Protocol is a CPI-pegged stablecoin system with irreversible supply absorption, private transfer infrastructure, and custodial vaults for the FlatID account system. Each entry states its own source-verification and control status; do not generalize one contract’s status to another.
 
 **Website:** [flat.cash](https://flat.cash) · **Contracts Page:** [flat.cash/contracts](https://flat.cash/contracts) · **Agents:** [flat.cash/agents](https://flat.cash/agents)
 
@@ -22,6 +22,9 @@ FLAT Protocol is a CPI-pegged stablecoin system with irreversible supply absorpt
 | **BearerSwapV4** | [`0xD46633C54058D28Cad5d77C897df042dCCdADF4c`](https://etherscan.io/address/0xD46633C54058D28Cad5d77C897df042dCCdADF4c) | Guardian (3yr) | 0.8.24 |
 | **FlatIDVaultV3** | [`0x25ec1e6d07d70427BFA049Cc349079448080568C`](https://etherscan.io/address/0x25ec1e6d07d70427BFA049Cc349079448080568C) | Admin-Controlled | 0.8.20 |
 | **FlatIDSaveVaultV3** | [`0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B`](https://etherscan.io/address/0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B) | Admin-Controlled | 0.8.20 |
+| **FlatEthVault** | [`0xb7796498cfF4592CAd396e24828e1BC981c9684F`](https://etherscan.io/address/0xb7796498cfF4592CAd396e24828e1BC981c9684F) | Deployed vault; source publication pending | 0.8.24 (bytecode metadata) |
+
+> **FlatEthVault source status.** The Ethereum mainnet address is deployed, but its Solidity source is not currently published in this repository, Etherscan, Blockscout, or Sourcify. Its compiler-metadata evidence is documented in [`docs/FlatEthVault.DEPLOYMENT.md`](./docs/FlatEthVault.DEPLOYMENT.md). Do not treat this repository’s FlatEthVault entry as verified source until a source build has been matched to the deployed bytecode.
 
 ### Uniswap V2 Pairs
 
@@ -47,6 +50,8 @@ src/
 └── vault/
     ├── FlatIDVaultV3.sol      # Custodial FLAT vault (FlatID accounts)
     └── FlatIDSaveVaultV3.sol  # Custodial SAVE vault (FlatID accounts)
+docs/
+└── FlatEthVault.DEPLOYMENT.md # Deployed-address evidence; source recovery pending
 interfaces/
 ├── IAggregatorV3.sol     # Chainlink price feed interface
 ├── IUniswapV2Router02.sol
@@ -97,11 +102,13 @@ As absorption (α) approaches 1, price approaches infinity. SAVE locks RISE perm
 
 ## Verification
 
-All contracts are verified on Etherscan. You can compare the source code in this repository with the verified bytecode on-chain:
+For contracts identified as source-verified, compare the repository source with the verified on-chain source:
 
 1. Visit the Etherscan link for any contract above
 2. Go to the "Contract" tab → "Read Contract" or "Code"
 3. Compare with the corresponding `.sol` file in this repo
+
+FlatEthVault is intentionally excluded from that verified-source claim until its original Solidity source is recovered and its compiled bytecode is matched to the deployment.
 
 ## Note on BearerSwapV4
 

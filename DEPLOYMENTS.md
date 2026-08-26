@@ -42,6 +42,14 @@ All contracts deployed on **Ethereum Mainnet (Chain ID: 1)**.
 | FlatIDVaultV3 | `0x25ec1e6d07d70427BFA049Cc349079448080568C` | [View](https://etherscan.io/address/0x25ec1e6d07d70427BFA049Cc349079448080568C) |
 | FlatIDSaveVaultV3 | `0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B` | [View](https://etherscan.io/address/0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B) |
 
+### FlatETH Vault
+
+| Contract | Address | Etherscan | Source status |
+|----------|---------|-----------|---------------|
+| FlatEthVault | `0xb7796498cfF4592CAd396e24828e1BC981c9684F` | [View](https://etherscan.io/address/0xb7796498cfF4592CAd396e24828e1BC981c9684F) | Deployed; original Solidity source recovery and bytecode match pending |
+
+The FlatEthVault record is intentionally distinct from source-verified contract entries. Its address, creator, compiler metadata, and public-source lookup results are recorded in [`docs/FlatEthVault.DEPLOYMENT.md`](./docs/FlatEthVault.DEPLOYMENT.md). FlatArbitrage is not listed as an active deployment.
+
 ### Uniswap V2 Pairs
 
 | Pair | Address | Etherscan |
