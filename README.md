@@ -18,11 +18,11 @@ FLAT Protocol is a CPI-pegged stablecoin system with irreversible supply absorpt
 | **FlatSale V4** | [`0x968A01C2C54e295573411ef5db52D2a5F56D215b`](https://etherscan.io/address/0x968a01c2c54e295573411ef5db52d2a5f56d215b) | Ownable2Step | 0.8.28 |
 | **RISE** | [`0xc1E141863414f434E46162A1184345E45CF5a14A`](https://etherscan.io/address/0xc1e141863414f434e46162a1184345e45cf5a14a) | Fully Immutable | 0.8.26 |
 | **SAVE (Vault)** | [`0x9f0DD6e940478293964aE778e4C720B720cf9cAe`](https://etherscan.io/address/0x9f0dd6e940478293964ae778e4c720b720cf9cae) | Fully Immutable | 0.8.26 |
-| **SAVESale v3** | [`0x1735e5a74E4f948E16e987D4C8Ba2a8DE05Cd3CB`](https://etherscan.io/address/0x1735e5a74E4f948E16e987D4C8Ba2a8DE05Cd3CB) | Guardian (3yr) | 0.8.26 |
-| **BearerSwapV4** | [`0xD46633C54058D28Cad5d77C897df042dCCdADF4c`](https://etherscan.io/address/0xD46633C54058D28Cad5d77C897df042dCCdADF4c) | Guardian (3yr) | 0.8.24 |
-| **FlatIDVaultV3** | [`0x25ec1e6d07d70427BFA049Cc349079448080568C`](https://etherscan.io/address/0x25ec1e6d07d70427bfa049cc349079448080568C) | Admin-Controlled | 0.8.20 |
+| **SAVESale v3** | [`0x1735e5a74E4f948E16e987D4C8Ba2a8DE05Cd3CB`](https://etherscan.io/address/0x1735e5a74e4f948e16e987d4c8ba2a8de05cd3cb) | Guardian (3yr) | 0.8.26 |
+| **BearerSwapV4** | [`0xD46633C54058D28Cad5d77C897df042dCCdADF4c`](https://etherscan.io/address/0xd46633c54058d28cad5d77c897df042dccdadf4c) | Guardian (3yr) | 0.8.24 |
+| **FlatIDVaultV3** | [`0x25ec1e6d07d70427BFA049Cc349079448080568C`](https://etherscan.io/address/0x25ec1e6d07d70427bfa049cc349079448080568c) | Admin-Controlled | 0.8.20 |
 | **FlatIDSaveVaultV3** | [`0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B`](https://etherscan.io/address/0xe1b70b17aef2dc810c5ea9b73aea092b7ca1270b) | Admin-Controlled | 0.8.20 |
-| **FlatEthVault** | [`0xb7796498cfF4592CAd396e24828e1BC981c9684F`](https://etherscan.io/address/0xb7796498cfF4592CAd396e24828e1BC981c9684F) | Deployed vault; source publication pending | 0.8.24 (bytecode metadata) |
+| **FlatEthVault** | [`0xb7796498cfF4592CAd396e24828e1BC981c9684F`](https://etherscan.io/address/0xb7796498cff4592cad396e24828e1bc981c9684f) | Deployed vault; source publication pending | 0.8.24 (bytecode metadata) |
 
 > **FlatEthVault source status.** The Ethereum mainnet address is deployed, but its Solidity source is not currently published in this repository, Etherscan, Blockscout, or Sourcify. Its compiler-metadata evidence is documented in [`docs/FlatEthVault.DEPLOYMENT.md`](./docs/FlatEthVault.DEPLOYMENT.md). Do not treat this repository’s FlatEthVault entry as verified source until a source build has been matched to the deployed bytecode.
 
@@ -68,11 +68,26 @@ interfaces/
 
 ## Building
 
-Run `forge install OpenZeppelin/openzeppelin-contracts` before `forge build`: the
-V6-generation contracts (`FlatSaleV6`, `SflatSaveRedeemer`, `FlatLiquidityExecutor`)
-import `@openzeppelin/*` and this repository does not vendor `lib/`. The pinned
-build profile is in `foundry.toml` (solc 0.8.28, optimizer enabled, 200 runs) —
-use it unchanged so Etherscan verification is an Exact Match.
+Install the pinned OpenZeppelin release first — the V6-generation contracts
+(`FlatSaleV6`, `SflatSaveRedeemer`, `FlatLiquidityExecutor`) import
+`@openzeppelin/*` and this repository does not vendor `lib/`:
+
+```bash
+forge install OpenZeppelin/openzeppelin-contracts@v5.7.0  # commit cab19933c33c2ad1d4c7a84864a3601dddfd16f3
+```
+
+Build only the V6-generation targets — a repository-wide `forge build` fails by
+design because the legacy `src/core` sources pin solc 0.8.26 exactly while the
+pinned profile uses 0.8.28:
+
+```bash
+forge build src/sale/FlatSaleV6.sol src/sale/SflatSaveRedeemer.sol src/sale/FlatLiquidityExecutor.sol
+```
+
+The pinned build profile is in `foundry.toml` (solc 0.8.28, optimizer enabled,
+200 runs, **via-IR enabled** — `FlatSaleV6.buyTo` exceeds the legacy pipeline's
+stack limit). Use it unchanged for build, deployment and verification so
+Etherscan verification is an Exact Match.
 
 ## Security Model
 
@@ -115,7 +130,7 @@ As absorption (α) approaches 1, price approaches infinity. SAVE locks RISE perm
 - **SAVESale v3**: OpenZeppelin 5.x (Remix)
 - **BearerSwapV4**: OpenZeppelin 5.x (Foundry)
 - **FlatIDVaultV3/FlatIDSaveVaultV3**: Inlined SafeERC20 (Hardhat, 0.8.20)
-- **FlatSaleV6, SflatSaveRedeemer, FlatLiquidityExecutor**: OpenZeppelin 5.x (Foundry, solc 0.8.28, optimizer 200) — source published, deployment pending per [`docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md`](./docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md)
+- **FlatSaleV6, SflatSaveRedeemer, FlatLiquidityExecutor**: OpenZeppelin 5.x (Foundry, solc 0.8.28, optimizer 200, via-IR) — source published, deployment pending per [`docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md`](./docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md)
 
 ## Verification
 
