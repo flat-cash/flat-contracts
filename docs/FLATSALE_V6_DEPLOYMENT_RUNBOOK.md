@@ -38,16 +38,41 @@ operator; ownership then moves (two-step) to the Safe.
 ```bash
 git clone https://github.com/flat-cash/flat-contracts.git
 cd flat-contracts
-# V6 imports @openzeppelin/* — the repo does not vendor lib/, install it:
-forge install OpenZeppelin/openzeppelin-contracts
-forge build
+# V6 imports @openzeppelin/* — the repo does not vendor lib/. Install the PINNED
+# release (v5.7.0 == commit cab19933c33c2ad1d4c7a84864a3601dddfd16f3):
+forge install OpenZeppelin/openzeppelin-contracts@v5.7.0
+# Fallback if the installed foundry version rejects the @tag form:
+#   forge install OpenZeppelin/openzeppelin-contracts
+#   git -C lib/openzeppelin-contracts checkout cab19933c33c2ad1d4c7a84864a3601dddfd16f3
+# Verify the pin — if this prints anything else, stop and report:
+git -C lib/openzeppelin-contracts rev-parse HEAD
+# expected: cab19933c33c2ad1d4c7a84864a3601dddfd16f3
+
+# Build ONLY the deployment targets. Do NOT run a repository-wide `forge build`:
+# it fails by design because foundry.toml pins solc 0.8.28 while the unrelated
+# legacy src/core contracts (SAVE.sol etc.) pin exactly 0.8.26. The three targets
+# import only @openzeppelin/* and interfaces/, so src/core is outside their
+# dependency closure, and a targeted build yields byte-identical target bytecode:
+# a contract's bytecode depends on its own dependency closure plus the pinned
+# compiler settings, never on unrelated repository files.
+forge build src/sale/FlatSaleV6.sol src/sale/SflatSaveRedeemer.sol src/sale/FlatLiquidityExecutor.sol
 ```
 
 The repo `foundry.toml` pins `solc = "0.8.28"`, `optimizer = true`,
 `optimizer_runs = 200`. All three contracts compile under this profile
 (`pragma solidity ^0.8.24` accepts 0.8.28). **Use these exact settings for
 deployment and verification so the Etherscan verification is an Exact Match.**
-`forge verify-contract` reads them automatically.
+`forge verify-contract` reads them automatically. The same target-scope rule
+applies to deployment: `forge create src/sale/<File>.sol:<Contract> ...`
+compiles only that contract's closure. The repo contains no Foundry test suite
+(no `test/` directory); the gates are compile → Exact Match verification → the
+Step 2 on-chain read checks → the Step 7 live test transactions, all while the
+contracts are paused and recoverable.
+
+Hard rules for this step: do not modify `foundry.toml`, do not touch any legacy
+source file, do not change compiler settings, do not upgrade the pinned
+OpenZeppelin revision. If the targeted build fails, stop and report — the same
+rule as every other step.
 
 ## Step 1 — Deploy FlatSaleV6
 
