@@ -1,12 +1,26 @@
 # FlatSale V6 Generation — Deployment Runbook (for Manus)
 
-**Version 2 — 2026-10-11.** Supersedes Version 1 (commit `aa7cde53`) and the
-unversioned corrections (`ddc1862c`, `1af1abc8`). If you hold any earlier copy,
-discard it — this document is the sole authority.
+**Version 3 — 2026-10-11.** Supersedes Version 2 (commit `3834e30b`) and all
+earlier copies. If you hold any earlier copy, discard it — this document is the
+sole authority.
 
 This runbook is the single source of truth for deploying the reviewed V6-generation
 contracts and bringing them live. Execute the steps **in order**. Do not skip any
 verification step. If any check fails, stop and report — do not retry blindly.
+
+**Changes in Version 3** (from the Version 2 Step 0 build stop):
+
+- The pinned build profile now enables **via-IR** (`via_ir = true` in
+  `foundry.toml`, commit `fbee6a92`): under the legacy pipeline, solc 0.8.28
+  rejects `FlatSaleV6.buyTo` with "stack too deep" at the buyer balance-delta
+  check. via-IR was chosen over a source refactor specifically to keep the
+  reviewed, hash-locked sources **byte-identical** — the artifact's authority
+  comes from Etherscan Exact Match, the Step 2 runtime hash, and the Step 7
+  live test transactions, not from any earlier bytecode. via-IR changes codegen
+  only; it changes no source bytes and no semantics of the reviewed code.
+- Re-clone or pull before building: the `foundry.toml` on disk must contain
+  `via_ir = true` (Step 0 checks this). Do not add the flag manually.
+- Approval gates unchanged.
 
 **Changes in Version 2** (from the Step 0 stop report and its review):
 
@@ -82,6 +96,9 @@ operator; ownership then moves (two-step) to the Safe.
 ```bash
 git clone https://github.com/flat-cash/flat-contracts.git
 cd flat-contracts
+# The pinned profile must include via_ir = true (commit fbee6a92 or later).
+# If this prints nothing, stop and report — do NOT add the flag yourself:
+grep "via_ir = true" foundry.toml
 # V6 imports @openzeppelin/* — the repo does not vendor lib/. Install the PINNED
 # release (v5.7.0 == commit cab19933c33c2ad1d4c7a84864a3601dddfd16f3):
 forge install OpenZeppelin/openzeppelin-contracts@v5.7.0
@@ -103,7 +120,9 @@ forge build src/sale/FlatSaleV6.sol src/sale/SflatSaveRedeemer.sol src/sale/Flat
 ```
 
 The repo `foundry.toml` pins `solc = "0.8.28"`, `optimizer = true`,
-`optimizer_runs = 200`. All three contracts compile under this profile
+`optimizer_runs = 200`, `via_ir = true`. via-IR is required, not optional:
+under the legacy pipeline `FlatSaleV6.buyTo` does not compile (stack too deep).
+All three contracts compile under this profile
 (`pragma solidity ^0.8.24` accepts 0.8.28). **Use these exact settings for
 deployment and verification so the Etherscan verification is an Exact Match.**
 `forge verify-contract` reads them automatically. The same target-scope rule
@@ -113,7 +132,8 @@ compiles only that contract's closure. The repo contains no Foundry test suite
 Step 2 on-chain read checks → the Step 7 live test transactions, all while the
 contracts are paused and recoverable.
 
-Hard rules for this step: do not modify `foundry.toml`, do not touch any legacy
+Hard rules for this step: do not modify `foundry.toml` (its `via_ir = true` is
+intentional and required), do not touch any legacy or target
 source file, do not change compiler settings, do not upgrade the pinned
 OpenZeppelin revision. If the targeted build fails, stop and report — the same
 rule as every other step.
