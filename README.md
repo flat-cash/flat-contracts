@@ -20,8 +20,8 @@ FLAT Protocol is a CPI-pegged stablecoin system with irreversible supply absorpt
 | **SAVE (Vault)** | [`0x9f0DD6e940478293964aE778e4C720B720cf9cAe`](https://etherscan.io/address/0x9f0dd6e940478293964ae778e4c720b720cf9cae) | Fully Immutable | 0.8.26 |
 | **SAVESale v3** | [`0x1735e5a74E4f948E16e987D4C8Ba2a8DE05Cd3CB`](https://etherscan.io/address/0x1735e5a74E4f948E16e987D4C8Ba2a8DE05Cd3CB) | Guardian (3yr) | 0.8.26 |
 | **BearerSwapV4** | [`0xD46633C54058D28Cad5d77C897df042dCCdADF4c`](https://etherscan.io/address/0xD46633C54058D28Cad5d77C897df042dCCdADF4c) | Guardian (3yr) | 0.8.24 |
-| **FlatIDVaultV3** | [`0x25ec1e6d07d70427BFA049Cc349079448080568C`](https://etherscan.io/address/0x25ec1e6d07d70427BFA049Cc349079448080568C) | Admin-Controlled | 0.8.20 |
-| **FlatIDSaveVaultV3** | [`0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B`](https://etherscan.io/address/0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B) | Admin-Controlled | 0.8.20 |
+| **FlatIDVaultV3** | [`0x25ec1e6d07d70427BFA049Cc349079448080568C`](https://etherscan.io/address/0x25ec1e6d07d70427bfa049cc349079448080568C) | Admin-Controlled | 0.8.20 |
+| **FlatIDSaveVaultV3** | [`0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B`](https://etherscan.io/address/0xe1b70b17aef2dc810c5ea9b73aea092b7ca1270b) | Admin-Controlled | 0.8.20 |
 | **FlatEthVault** | [`0xb7796498cfF4592CAd396e24828e1BC981c9684F`](https://etherscan.io/address/0xb7796498cfF4592CAd396e24828e1BC981c9684F) | Deployed vault; source publication pending | 0.8.24 (bytecode metadata) |
 
 > **FlatEthVault source status.** The Ethereum mainnet address is deployed, but its Solidity source is not currently published in this repository, Etherscan, Blockscout, or Sourcify. Its compiler-metadata evidence is documented in [`docs/FlatEthVault.DEPLOYMENT.md`](./docs/FlatEthVault.DEPLOYMENT.md). Do not treat this repository’s FlatEthVault entry as verified source until a source build has been matched to the deployed bytecode.
@@ -44,19 +44,35 @@ src/
 │   └── SAVE.sol          # Irreversible RISE lock vault (absorption mechanism)
 ├── sale/
 │   ├── FlatSaleV4.sol    # ETH→FLAT sale with on-chain CPI oracle
-│   └── SaveSaleV3.sol    # Composable SAVE sale with POL routing
+│   ├── SaveSaleV3.sol    # Composable SAVE sale with POL routing
+│   ├── FlatSaleV6.sol    # Oracle-priced ETH→FLAT sale (V6 generation; deployment pending)
+│   ├── SflatSaveRedeemer.sol     # sFLAT→SAVE oracle-priced redemption router (deployment pending)
+│   ├── FlatLiquidityExecutor.sol # Operator-exclusive liquidity; LP mints to Safe (deployment pending)
+│   └── interfaces/IPriceFeed.sol # Chainlink-compatible feed interface used by V6
 ├── privacy/
 │   └── BearerSwapV4.sol  # Private transfer & swap infrastructure
 └── vault/
     ├── FlatIDVaultV3.sol      # Custodial FLAT vault (FlatID accounts)
     └── FlatIDSaveVaultV3.sol  # Custodial SAVE vault (FlatID accounts)
 docs/
-└── FlatEthVault.DEPLOYMENT.md # Deployed-address evidence; source recovery pending
+├── FlatEthVault.DEPLOYMENT.md # Deployed-address evidence; source recovery pending
+└── FLATSALE_V6_DEPLOYMENT_RUNBOOK.md # V6-generation deployment instructions
 interfaces/
 ├── IAggregatorV3.sol     # Chainlink price feed interface
+├── IERC20Minimal.sol
+├── IFlatPriceSource.sol  # V6 CPI price authority interface
+├── ISflatVault.sol       # sFLAT vault redeem interface
 ├── IUniswapV2Router02.sol
 └── IUniswapV2Pair.sol
 ```
+
+## Building
+
+Run `forge install OpenZeppelin/openzeppelin-contracts` before `forge build`: the
+V6-generation contracts (`FlatSaleV6`, `SflatSaveRedeemer`, `FlatLiquidityExecutor`)
+import `@openzeppelin/*` and this repository does not vendor `lib/`. The pinned
+build profile is in `foundry.toml` (solc 0.8.28, optimizer enabled, 200 runs) —
+use it unchanged so Etherscan verification is an Exact Match.
 
 ## Security Model
 
@@ -99,6 +115,7 @@ As absorption (α) approaches 1, price approaches infinity. SAVE locks RISE perm
 - **SAVESale v3**: OpenZeppelin 5.x (Remix)
 - **BearerSwapV4**: OpenZeppelin 5.x (Foundry)
 - **FlatIDVaultV3/FlatIDSaveVaultV3**: Inlined SafeERC20 (Hardhat, 0.8.20)
+- **FlatSaleV6, SflatSaveRedeemer, FlatLiquidityExecutor**: OpenZeppelin 5.x (Foundry, solc 0.8.28, optimizer 200) — source published, deployment pending per [`docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md`](./docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md)
 
 ## Verification
 
