@@ -1,8 +1,52 @@
 # FlatSale V6 Generation — Deployment Runbook (for Manus)
 
+**Version 2 — 2026-10-11.** Supersedes Version 1 (commit `aa7cde53`) and the
+unversioned corrections (`ddc1862c`, `1af1abc8`). If you hold any earlier copy,
+discard it — this document is the sole authority.
+
 This runbook is the single source of truth for deploying the reviewed V6-generation
 contracts and bringing them live. Execute the steps **in order**. Do not skip any
 verification step. If any check fails, stop and report — do not retry blindly.
+
+**Changes in Version 2** (from the Step 0 stop report and its review):
+
+- Step 0 is now a **target-only build** — a repository-wide `forge build` fails
+  by design (legacy `src/core` pins solc 0.8.26 exactly while `foundry.toml`
+  pins 0.8.28) — with OpenZeppelin **pinned** to v5.7.0
+  (commit `cab19933c33c2ad1d4c7a84864a3601dddfd16f3`).
+- Window semantics corrected: sale/outflow windows are **fixed**, not rolling.
+- Abort rule corrected: at birth the **operator** (not the Safe) holds pause on
+  V6 and the redeemer; Safe pause arrives at Step 5 acceptance (executor: from
+  birth).
+- **Approval gates** added (below): this document authorizes preparation and
+  read-only verification; every on-chain action needs its own explicit approval.
+- Settled — do not re-raise: the companion contracts' fixed economic values are
+  approved as designed; immediate Safe ownership handoff supersedes the earlier
+  six-month EOA observation plan.
+- Noted: earlier Hardhat build/test evidence does not cover this Foundry
+  artifact. Authority comes from the deployed bytecode itself (Step 2 runtime
+  hash), Etherscan Exact Match, and the Step 7 live test transactions.
+
+## Approval gates (binding)
+
+Each on-chain action requires its own separate, explicit approval:
+
+1. **Build + preflight** (covered by this document): Step 0 compile, artifact
+   checks, read-only RPC preflights, nonce/balance/price snapshots.
+2. **FlatSaleV6 creation** — present a bounded, unsigned plan first: constructor
+   arguments (with `initialBasePrice` read fresh from V5 at planning time), gas
+   price, maximum total fee in ETH and USD, relayer nonce, deployment order.
+   Wait for explicit approval before signing or broadcasting.
+3. **SflatSaveRedeemer creation** — separate approval, only after V6 verifies
+   clean (Step 2).
+4. **FlatLiquidityExecutor creation** — separate approval, only after the
+   redeemer verifies clean.
+5. **Ownership handoff** (Step 5), **funding** (Step 6), **activation**
+   (Step 7) — each a separate approval.
+6. **Website go-live** (Step 8) — separate approval, executed by the website
+   maintainer, not the deployer.
+
+Never bundle two gated actions into one approval request.
 
 **Contracts covered:**
 
