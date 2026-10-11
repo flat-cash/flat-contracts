@@ -105,7 +105,7 @@ constructor reverts if it is outside `[0.5e18, 3e18]`.
 |-------|-------|
 | buyerFlatCap | `25000000000000000000000` (25,000 FLAT) |
 | maxFlatPerTx | `2500000000000000000000` (2,500 FLAT) |
-| maxFlatPerWindow | `5000000000000000000000` (5,000 FLAT / rolling 24 h) |
+| maxFlatPerWindow | `5000000000000000000000` (5,000 FLAT / fixed 24 h window) |
 | minPurchaseEth | `10000000000000000` (0.01 ETH) |
 | ethUsdStaleness | `3600` (seconds) |
 
@@ -128,6 +128,13 @@ constructor reverts if it is outside `[0.5e18, 3e18]`.
 | salesWindowSeconds | `86400` |
 | configDelaySeconds | `86400` (24 h) |
 | unpauseDelaySeconds | `172800` (48 h) |
+
+Note on window semantics (applies to V6 and the redeemer): the sale/outflow
+windows are **fixed**, not rolling. V6 buckets by `block.timestamp /
+salesWindowSeconds` (aligned to 00:00 UTC); the redeemer's window anchors at
+deployment and resets on the first redemption after expiry. At a window
+boundary, up to 2× the window cap can move within a short interval — overall
+exposure stays bounded by `buyerFlatCap` and the per-transaction cap.
 
 Deploy **from the relayer**. The contract starts **paused with zero inventory** —
 this is expected and required.
@@ -171,7 +178,7 @@ Constructor — **9 positional arguments, in order**:
 | 6 | safe | `0x781fc238a2e8D0a7a986B4BD2C8835C60dC9C714` |
 | 7 | initialSaveUsdRate | `1000000000000000000` (1.00 USD) |
 | 8 | maxSavePerTx_ | `25000000000000000000000` (25,000 SAVE) |
-| 9 | maxSavePerWindow_ | `100000000000000000000000` (100,000 SAVE / 24 h) |
+| 9 | maxSavePerWindow_ | `100000000000000000000000` (100,000 SAVE / fixed 24 h window) |
 
 Starts paused. Verify on-chain: `priceSource()` == V6, `owner()` == operator,
 `paused()` == true, then `forge verify-contract` (Exact Match). Record the
@@ -269,7 +276,10 @@ FLAT page switches to the verified V6 purchase panel automatically.
 
 - Never re-broadcast a transaction whose hash you did not record; check the
   relayer's on-chain nonce/history first.
-- If any verification step mismatches, pause everything (the Safe can pause all
-  three contracts instantly) and report the exact mismatch.
+- If any verification step mismatches, pause everything and report the exact
+  mismatch. Pause authority at birth: the **operator** can pause all three
+  contracts instantly (it is the initial owner of V6 and the redeemer); the
+  Safe can pause the executor from birth and gains V6/redeemer pause authority
+  when it accepts ownership in Step 5.
 - The V5 sale contract is retired by the website switch, not by an on-chain
   action; its owner can keep it paused permanently.
