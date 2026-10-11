@@ -27,6 +27,7 @@ All contracts deployed on **Ethereum Mainnet (Chain ID: 1)**.
 | Contract | Address | Etherscan |
 |----------|---------|-----------|
 | FlatSale V4 | `0x968A01C2C54e295573411ef5db52D2a5F56D215b` | [View](https://etherscan.io/address/0x968a01c2c54e295573411ef5db52d2a5f56d215b) |
+| FlatSale V5 | `0xE0c26C7f04cAcB13f99A772C5e3888d9C1A6a408` | [View](https://etherscan.io/address/0xe0c26c7f04cacb13f99a772c5e3888d9c1a6a408) |
 | SAVESale v3 | `0x1735e5a74E4f948E16e987D4C8Ba2a8DE05Cd3CB` | [View](https://etherscan.io/address/0x1735e5a74E4f948E16e987D4C8Ba2a8DE05Cd3CB) |
 
 ### Privacy Infrastructure
@@ -39,8 +40,8 @@ All contracts deployed on **Ethereum Mainnet (Chain ID: 1)**.
 
 | Contract | Address | Etherscan |
 |----------|---------|-----------|
-| FlatIDVaultV3 | `0x25ec1e6d07d70427BFA049Cc349079448080568C` | [View](https://etherscan.io/address/0x25ec1e6d07d70427BFA049Cc349079448080568C) |
-| FlatIDSaveVaultV3 | `0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B` | [View](https://etherscan.io/address/0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B) |
+| FlatIDVaultV3 | `0x25ec1e6d07d70427BFA049Cc349079448080568C` | [View](https://etherscan.io/address/0x25ec1e6d07d70427bfa049cc349079448080568C) |
+| FlatIDSaveVaultV3 | `0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B` | [View](https://etherscan.io/address/0xe1b70b17aef2dc810c5ea9b73aea092b7ca1270b) |
 
 ### FlatETH Vault
 
@@ -74,3 +75,20 @@ The FlatEthVault record is intentionally distinct from source-verified contract 
 | FlatID Admin | `0xdDf493752E2578f64dd78249D846E3C87A6936bC` | Ledger cold wallet |
 | Operator/Relayer | `0x959886194B5F42891A804be614Eb0e6dBBaBbea2` | Hot wallet for operations |
 | Treasury (Gnosis Safe) | `0x781fc238a2e8D0a7a986B4BD2C8835C60dC9C714` | Protocol treasury |
+
+## Pending Deployment — V6 Generation
+
+The following contracts are source-final in this repository and await deployment
+per [`docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md`](./docs/FLATSALE_V6_DEPLOYMENT_RUNBOOK.md).
+Addresses are recorded here only after deployment, two-RPC verification, and
+Etherscan Exact Match confirmation.
+
+| Contract | Source | Role | Address |
+|----------|--------|------|---------|
+| FlatSaleV6 | `src/sale/FlatSaleV6.sol` | Oracle-priced ETH→FLAT sale; 100% of buyer ETH forwards to the Safe; no pool/router/LP surface | TBD |
+| SflatSaveRedeemer | `src/sale/SflatSaveRedeemer.sol` | sFLAT → SAVE redemption at the V6 oracle price; FLAT proceeds forward to the Safe | TBD |
+| FlatLiquidityExecutor | `src/sale/FlatLiquidityExecutor.sol` | Operator-exclusive FLAT/WETH liquidity adds with an oracle deviation guard; LP tokens mint directly to the Safe | TBD |
+
+Related live infrastructure referenced by the V6 generation: the sFLAT vault
+(`0xD5d09e49AdF6C7A98b7B0e0157F5d537Ca6e7091`) and the FLAT exit router
+(`0xd3777f99DA02072466067820cE0d6E4e3579ec1b`).
