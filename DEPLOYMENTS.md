@@ -72,7 +72,7 @@ Status legend: **Live** (in the current application path) · **Pending activatio
 
 | Contract | Address | Status | Etherscan |
 |----------|---------|--------|-----------|
-| FETH / FlatEthVault V5 | `0x1baEeBDcE5464bd578168d2Db433362570843971` | Inactive (exact-source verified and inert; deposits disabled and unqueued; zero assets) | [View](https://etherscan.io/address/0x1baeebdc e5464bd578168d2db433362570843971) |
+| FETH / FlatEthVault V5 | `0x1baEeBDcE5464bd578168d2Db433362570843971` | Inactive (exact-source verified and inert; deposits disabled and unqueued; zero assets) | [View](https://etherscan.io/address/0x1baeebdcE5464bd578168d2Db433362570843971) |
 | FETH Governance Controller V1 | `0xeEa97e224C4aaEd5D50238Ee11Ca7F45eAe4C7FE` | Inactive (typed delayed governance; Safe handoff not queued) | [View](https://etherscan.io/address/0xeea97e224c4aaed5d50238ee11ca7f45eae4c7fe) |
 | FETH Reward Controller V1 | `0x80A7CA3097D2232f7A086dbF48f3ac1Ed3230a52` | Inactive (no reward epoch or funding authorized) | [View](https://etherscan.io/address/0x80a7ca3097d2232f7a086dbf48f3ac1ed3230a52) |
 | FETH V5 Deployment Factory | `0xCC98737AdF07E132ed61C0Ba1E0BBaE7fD1f63a8` | Inactive (constructor-only deployment record) | [View](https://etherscan.io/address/0xcc98737adf07e132ed61c0ba1e0bbae7fd1f63a8) |
