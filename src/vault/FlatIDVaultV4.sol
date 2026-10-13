@@ -26,6 +26,9 @@ pragma solidity ^0.8.20;
  *         sFLAT vault, so savings claims are backed on-chain (not a ledger promise) and
  *         yield accrues to users. convertFlatToSflat / convertSflatToFlat settle
  *         atomically through the live sFLAT vault.
+ *      5. HYGIENE — seeding is frozen while abandoned (no new claims can be born into an
+ *         abandoned vault); sweepForeign recovers stray non-lane tokens to the Safe;
+ *         setSflatVault requires zero outstanding sFLAT claims.
  *
  *      CUSTODIAL BY DESIGN: the admin (Ledger cold wallet) has full control. That is
  *      intentional and is not a vulnerability. The security model defends against a
@@ -143,6 +146,7 @@ contract FlatIDVaultV4 {
     event BalanceSeeded(address indexed token, address indexed user, uint256 amount);
     event SeedingCompleted();
     event SurplusRecovered(address indexed token, uint256 amount);
+    event ForeignSwept(address indexed token, uint256 amount);
     event ReviveQueued(uint256 eta);
     event Revived(address indexed by, uint256 timestamp);
 
@@ -610,6 +614,21 @@ contract FlatIDVaultV4 {
         emit SurplusRecovered(token, surplus);
     }
 
+    /// @notice Sweep a NON-LANE token (stray airdrops, mistakes) to the guardian.
+    /// @dev Lane tokens are rejected, so this function can never touch anything a user
+    ///      could have a claim on. Works in any state, including abandoned.
+    function sweepForeign(address token) external onlyGuardian nonReentrant {
+        require(!_isLane(token), "Lane token");
+        require(token != address(0), "Invalid token");
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        require(bal > 0, "Nothing to sweep");
+        Address.functionCall(
+            token,
+            abi.encodeWithSelector(IERC20.transfer.selector, guardian, bal)
+        );
+        emit ForeignSwept(token, bal);
+    }
+
     /// @notice Queue the ONE-TIME revive. Starts the 7-day public timelock.
     function queueRevive() external onlyGuardian {
         require(isAbandoned(), "Not abandoned");
@@ -638,12 +657,14 @@ contract FlatIDVaultV4 {
     // BALANCE SEEDING (ONE-TIME MIGRATION — HONORS LEGACY V3 / V2.9 CLAIMS)
     // ═══════════════════════════════════════════════════════════════════
 
-    /// @notice Seed userBalances + principalOf from prior-vault state. Admin only, pre-finalize.
-    ///         One event per account so the migration is auditable on Etherscan.
+    /// @notice Seed userBalances + principalOf from prior-vault state. Admin only, pre-finalize,
+    ///         and frozen while abandoned (no new claims can be born into an abandoned vault —
+    ///         revive first). One event per account so the migration is auditable on Etherscan.
     ///         Legacy claims honored: 1,188.62 SAVE (V3 SAVE vault) + 49.03 FLAT (V2.9 vault).
     function seedBalances(address token, address[] calldata users, uint256[] calldata amounts)
         external
         onlyAdmin
+        whenNotAbandoned
     {
         require(_isLane(token), "Unknown lane");
         require(!seedingComplete, "Seeding already complete");
@@ -662,7 +683,7 @@ contract FlatIDVaultV4 {
 
     /// @notice Seal the seed. Reverts unless the vault actually holds the seeded tokens
     ///         for EVERY lane that has claims. After this, seedBalances is dead forever.
-    function finalizeSeed() external onlyAdmin {
+    function finalizeSeed() external onlyAdmin whenNotAbandoned {
         require(!seedingComplete, "Already finalized");
         require(_solvent(flatToken), "FLAT lane underfunded");
         require(_solvent(saveToken), "SAVE lane underfunded");
@@ -694,11 +715,11 @@ contract FlatIDVaultV4 {
     }
 
     /// @notice Point the sFLAT lane at a new ERC-4626 vault (e.g. sFLAT upgrade).
-    /// @dev The lane token key changes: existing share claims under the OLD vault address
-    ///      must be migrated off-chain (convert all users to FLAT first, or re-seed).
-    ///      Deploy-time value is correct; change only with a migration plan.
+    /// @dev The lane token key changes: the OLD lane must carry zero user claims
+    ///      (convert all users back to FLAT first). Enforced on-chain.
     function setSflatVault(address newVault) external onlyAdmin whenNotAbandoned {
         require(newVault != address(0), "Invalid vault");
+        require(lanes[sflatVault].totalUserBalances == 0, "Migrate sFLAT claims first");
         emit SflatVaultChanged(sflatVault, newVault);
         sflatVault = newVault;
     }
