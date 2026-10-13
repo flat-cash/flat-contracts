@@ -2,7 +2,7 @@
 
 All contracts deployed on **Ethereum Mainnet (Chain ID: 1)**.
 
-Status legend: **Live** (in the current application path) · **Pending activation** (deployed paused, awaiting Safe action) · **Superseded** (paused ahead of a newer deployment) · **Retired** (paused and emptied) · **Inactive** (paused/inert, kept for historical reference) · **Abandoned** (dead-man's switch tripped; all admin/operator paths permanently frozen, only user `emergencyWithdraw` remains).
+Status legend: **Live** (in the current application path) · **Pending activation** (deployed paused, awaiting Safe action) · **Superseded** (paused ahead of a newer deployment) · **Retired** (paused and emptied) · **Inactive** (paused/inert, kept for historical reference) · **Abandoned** (dead-man's switch tripped; all admin/operator paths permanently frozen, only user `emergencyWithdraw` remains) · **In development** (specified and tested, not yet deployed).
 
 ## Timeline
 
@@ -19,6 +19,7 @@ Status legend: **Live** (in the current application path) · **Pending activatio
 | September 27, 2026 | SAVESale V4 paused and complete SAVE inventory swept; retired |
 | October 2026 | V6 generation deployed paused: FlatSale V6, sFLAT Save Redeemer, Flat Liquidity Executor; ownership transferred (two-step) to the Gnosis Safe; FlatSale V5 paused ahead of the cutover |
 | October 14, 2026 | FlatSale V6 unpause timelock executable (06:50:23 UTC) — pending Safe execution |
+| October 14, 2026 | FlatIDVaultV4 specified, implemented, and tested (`src/vault/FlatIDVaultV4.sol`, `test/FlatIDVaultV4.t.sol`, 29-check behavioral suite green) — deployment pending |
 
 ## Contract Addresses
 
@@ -68,6 +69,7 @@ The FlatID application currently points at the **V3** vaults (see `server/flatid
 
 | Version | Contract | Address | Status | On-chain balances |
 |---------|----------|---------|--------|-------------------|
+| V4 | FlatIDVaultV4 (FLAT + sFLAT + SAVE, three lanes) | *not yet deployed* | **In development** — spec in `docs/FLATIDVAULT_V4_SPECIFICATION.md`; source `src/vault/FlatIDVaultV4.sol`; tests `test/FlatIDVaultV4.t.sol` | Will honor legacy claims: 1,188.62 SAVE (V3 SAVE vault) + 49.03 FLAT (V2.9 vault) via one-time seed |
 | V3 (current app wiring) | FlatIDVaultV3 (FLAT checking) | `0x25ec1e6d07d70427BFA049Cc349079448080568C` | **Abandoned** since Aug 18, 2026 | 1,000,157.05 FLAT held; 104.57 FLAT owed to users (`totalUserBalances`); ~1,000,052 FLAT surplus has no extraction path |
 | V3 (current app wiring) | FlatIDSaveVaultV3 (SAVE savings) | `0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B` | **Abandoned** since Aug 18, 2026 | 1,188.62 SAVE held; 1,188.62 SAVE owed to users (fully user funds, no surplus) |
 | V2.9-era | FlatID vault (FLAT) | `0xaca852a130033bf18cd028a87ce463ff6babf59a` | Abandoned; superseded by V3 | 49.03 FLAT held = 49.03 owed to users; funded June 17, 2026; migrated ~1,000,157 FLAT to V3 on June 19, 2026 (block 25,349,441) |
@@ -76,7 +78,7 @@ The FlatID application currently points at the **V3** vaults (see `server/flatid
 
 Version labels for the pre-V3 contracts are inferred from the on-chain migration chain and the V3 source's V1/V2.9 migration notes; their bytecode exposes the same admin/operator/guardian ABI family with admin = `0xdDf493752E2578f64dd78249D846E3C87A6936bC`.
 
-**Operational consequence:** FlatID withdrawals queued in the app cannot settle on-chain while the app points at the abandoned V3 vaults. Resolution path: deploy V4 vaults (keep the dead-man's switch, add an admin sweep), re-point the server constants, and migrate balances off-chain via the existing seeding flow. The ~1,000,052 FLAT surplus in FlatIDVaultV3 is permanently locked — treat it as burned supply in all circulation accounting.
+**Operational consequence:** FlatID withdrawals queued in the app cannot settle on-chain while the app points at the abandoned V3 vaults. Resolution path: deploy **FlatIDVaultV4** (heartbeat callable by admin/operator/guardian, survivable abandonment with `recoverSurplus` + one-time `revive`, per-lane caps), re-point the server constants, and seed the honored legacy claims (1,188.62 SAVE + 49.03 FLAT) via `seedBalances`/`finalizeSeed`. The ~1,000,052 FLAT surplus in FlatIDVaultV3 is permanently locked — treat it as burned supply in all circulation accounting.
 
 ### FETH V5 System (inactive)
 
