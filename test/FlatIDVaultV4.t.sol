@@ -318,6 +318,48 @@ contract FlatIDVaultV4Test {
         vault.pause();
     }
 
+    // ── 9. Self-review fixes ─────────────────────────────────────────────
+    function testSeedFrozenWhenAbandoned() public {
+        vm.warp(block.timestamp + HEARTBEAT + 1);
+        address[] memory users = new address[](1);
+        uint256[] memory amts = new uint256[](1);
+        users[0] = carol; amts[0] = 1;
+        vm.prank(admin); vm.expectRevert();
+        vault.seedBalances(address(save), users, amts);
+        vm.prank(admin); vm.expectRevert();
+        vault.finalizeSeed();
+    }
+
+    function testSweepForeign() public {
+        MockERC20 stray = new MockERC20("STRAY", "STRAY");
+        stray.mint(address(vault), 777 * E18);
+
+        vm.prank(guardian); vm.expectRevert(); // lane token rejected
+        vault.sweepForeign(address(flat));
+        vm.prank(rando); vm.expectRevert(); // non-guardian
+        vault.sweepForeign(address(stray));
+
+        // works even while abandoned
+        vm.warp(block.timestamp + HEARTBEAT + 1);
+        vm.prank(guardian); vault.sweepForeign(address(stray));
+        assertEq(stray.balanceOf(guardian), 777 * E18, "stray swept");
+    }
+
+    function testSetSflatVaultGuard() public {
+        flat.mint(address(vault), 100 * E18);
+        vm.prank(operator); vault.recordDeposit(address(flat), alice, 100 * E18);
+        vm.prank(operator); vault.convertFlatToSflat(alice, 60 * E18, 1);
+
+        MockSFlatVault newVault = new MockSFlatVault(address(flat));
+        vm.prank(admin); vm.expectRevert(); // outstanding sFLAT claims
+        vault.setSflatVault(address(newVault));
+
+        uint256 sh = vault.userBalances(address(sflat), alice);
+        vm.prank(operator); vault.convertSflatToFlat(alice, sh, 1);
+        vm.prank(admin); vault.setSflatVault(address(newVault));
+        assertTrue(vault.sflatVault() == address(newVault), "switched after claims cleared");
+    }
+
     // ── assertions ───────────────────────────────────────────────────────
     function assertEq(uint256 a, uint256 b, string memory m) internal pure {
         require(a == b, string.concat("assertEq: ", m));
