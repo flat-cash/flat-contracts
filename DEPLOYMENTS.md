@@ -2,7 +2,7 @@
 
 All contracts deployed on **Ethereum Mainnet (Chain ID: 1)**.
 
-Status legend: **Live** (in the current application path) · **Pending activation** (deployed paused, awaiting Safe action) · **Superseded** (paused ahead of a newer deployment) · **Retired** (paused and emptied) · **Inactive** (paused/inert, kept for historical reference).
+Status legend: **Live** (in the current application path) · **Pending activation** (deployed paused, awaiting Safe action) · **Superseded** (paused ahead of a newer deployment) · **Retired** (paused and emptied) · **Inactive** (paused/inert, kept for historical reference) · **Abandoned** (dead-man's switch tripped; all admin/operator paths permanently frozen, only user `emergencyWithdraw` remains).
 
 ## Timeline
 
@@ -11,9 +11,10 @@ Status legend: **Live** (in the current application path) · **Pending activatio
 | April 26, 2026 | Original deployment (FLAT, RISE, SAVE, FlatSale V1) |
 | April 29, 2026 | V2 migration (FlatSale V2) |
 | June 2, 2026 | V3/V4 migration (FlatSale V4, SAVESale v3) |
-| June 18, 2026 | FlatIDVaultV3 + FlatIDSaveVaultV3 deployed |
+| June 17–19, 2026 | FlatID vault lineage deployed: V1 vault (`0xee05…1644`) → V2.9 vault (`0xaca8…f59a`) → V3 vaults (FlatIDVaultV3 + FlatIDSaveVaultV3) with P2P settleTransfer |
 | July 10, 2026 | SAVESale v3 inventory swept; retired |
 | July 16, 2026 | BearerSwapV4 deployed (later superseded in the application by BearerSwapV3) |
+| August 18, 2026 | **Both FlatID V3 vaults abandoned** — 60-day heartbeat (last heartbeat June 19, 2026 05:54–05:56 UTC) expired; all admin/operator functions permanently frozen |
 | September 22, 2026 | FlatSale V5 Etherscan exact-match verified |
 | September 27, 2026 | SAVESale V4 paused and complete SAVE inventory swept; retired |
 | October 2026 | V6 generation deployed paused: FlatSale V6, sFLAT Save Redeemer, Flat Liquidity Executor; ownership transferred (two-step) to the Gnosis Safe; FlatSale V5 paused ahead of the cutover |
@@ -61,12 +62,21 @@ Status legend: **Live** (in the current application path) · **Pending activatio
 | BearerSwapV3 | `0x5de315Dab49012c5bbeC41d7a3B25c6829a3e566` | Live (current FlatBearer application contract) | [View](https://etherscan.io/address/0x5de315dab49012c5bbec41d7a3b25c6829a3e566) |
 | BearerSwapV4 | `0xD46633C54058D28Cad5d77C897df042dCCdADF4c` | Historical (not in the current application inventory) | [View](https://etherscan.io/address/0xD46633C54058D28Cad5d77C897df042dCCdADF4c) |
 
-### FlatID Vaults
+### FlatID Vaults — Version Registry
 
-| Contract | Address | Status | Etherscan |
-|----------|---------|--------|-----------|
-| FlatIDVaultV3 | `0x25ec1e6d07d70427BFA049Cc349079448080568C` | Live | [View](https://etherscan.io/address/0x25ec1e6d07d70427bfa049cc349079448080568C) |
-| FlatIDSaveVaultV3 | `0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B` | Live | [View](https://etherscan.io/address/0xe1b70b17aef2dc810c5ea9b73aea092b7ca1270b) |
+The FlatID application currently points at the **V3** vaults (see `server/flatid-account.ts`, `server/flatid-savings.ts`, `server/admin-vault.ts`). **Both V3 vaults tripped their 60-day dead-man's switch on August 18, 2026** and are permanently frozen: deposits still land (plain ERC-20 transfers), but `withdraw`, `settleTransfer`, and every admin/operator function revert. User principal remains claimable via `emergencyWithdraw()`.
+
+| Version | Contract | Address | Status | On-chain balances |
+|---------|----------|---------|--------|-------------------|
+| V3 (current app wiring) | FlatIDVaultV3 (FLAT checking) | `0x25ec1e6d07d70427BFA049Cc349079448080568C` | **Abandoned** since Aug 18, 2026 | 1,000,157.05 FLAT held; 104.57 FLAT owed to users (`totalUserBalances`); ~1,000,052 FLAT surplus has no extraction path |
+| V3 (current app wiring) | FlatIDSaveVaultV3 (SAVE savings) | `0xe1b70B17AEf2dc810C5EA9b73aEA092B7cA1270B` | **Abandoned** since Aug 18, 2026 | 1,188.62 SAVE held; 1,188.62 SAVE owed to users (fully user funds, no surplus) |
+| V2.9-era | FlatID vault (FLAT) | `0xaca852a130033bf18cd028a87ce463ff6babf59a` | Abandoned; superseded by V3 | 49.03 FLAT held = 49.03 owed to users; funded June 17, 2026; migrated ~1,000,157 FLAT to V3 on June 19, 2026 (block 25,349,441) |
+| V2.9-era | FlatID SAVE vault | `0xe2597be66c5a6fdefb668b98254f62c044ca91e9` | Retired (empty; abandoned) | 0 SAVE; swept to V3 on June 19, 2026 (block 25,349,459) |
+| V1-era | FlatID vault (FLAT) | `0xee0505bc4eca8ce7a48aa4c7037bc11555881644` | Retired (empty) | 0 FLAT; funded the V2.9 vault in June 2026 |
+
+Version labels for the pre-V3 contracts are inferred from the on-chain migration chain and the V3 source's V1/V2.9 migration notes; their bytecode exposes the same admin/operator/guardian ABI family with admin = `0xdDf493752E2578f64dd78249D846E3C87A6936bC`.
+
+**Operational consequence:** FlatID withdrawals queued in the app cannot settle on-chain while the app points at the abandoned V3 vaults. Resolution path: deploy V4 vaults (keep the dead-man's switch, add an admin sweep), re-point the server constants, and migrate balances off-chain via the existing seeding flow. The ~1,000,052 FLAT surplus in FlatIDVaultV3 is permanently locked — treat it as burned supply in all circulation accounting.
 
 ### FETH V5 System (inactive)
 
@@ -119,7 +129,7 @@ The FlatEthVault record is intentionally distinct from source-verified contract 
 | Role | Address | Notes |
 |------|---------|-------|
 | Protocol Treasury (Gnosis Safe) | `0x781fc238a2e8D0a7a986B4BD2C8835C60dC9C714` | Owner of FlatSale V6 and sFLAT Save Redeemer (two-step, completed); controls Flat Liquidity Executor unpause and operator rotation; receives all sale proceeds and LP tokens |
-| Liquidity Operator | `0xdDf493752E2578f64dd78249D846E3C87A6936bC` | Exclusive `addLiquidity` caller on Flat Liquidity Executor; FlatID vaults admin (Ledger cold wallet); initial owner used at V6-generation deployment before Safe handoff |
+| Liquidity Operator | `0xdDf493752E2578f64dd78249D846E3C87A6936bC` | Exclusive `addLiquidity` caller on Flat Liquidity Executor; FlatID vaults admin (Ledger cold wallet — frozen on the abandoned V3 vaults); initial owner used at V6-generation deployment before Safe handoff |
 | Operator/Relayer | `0x959886194B5F42891A804be614Eb0e6dBBaBbea2` | Hot wallet for deployment and operations transactions |
 | Legacy Protocol Owner | `0x11d6bac585a6B1d905080f90b86Ba86B18CbfC2e` | Deployer; still owner of legacy modules (CPIOracle v4, FlatArbitrage) pending migration |
 
