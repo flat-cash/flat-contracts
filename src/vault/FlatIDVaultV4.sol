@@ -158,6 +158,21 @@ pragma solidity ^0.8.20;
  *         (zeroing both addresses), so a slow-matured redirect is stranded, never paid.
  *      X. REVIVE REQUIRES A REVOKED OPERATOR — after a revive only the admin can act.
  *
+ *      V4.7 revision — round-6 review of V4.6 (Claude 9/10 DEPLOY WITH FIXES, one Low;
+ *      Grok 9/10 DEPLOY, one informational). Claude's Low: under X a guardian-executed
+ *      revive with no returning admin accomplishes nothing — no claim can mature and no
+ *      operator can be re-appointed without the admin — yet it closes user exits and
+ *      restarts the phase clock (heartbeatInterval + 30 days of principal-only exits);
+ *      and a queued revive never expired, so it could be executed months later with no
+ *      fresh notice. Grok: two natspec comments still named _claimMaturityRef as the
+ *      setter's promotion reference after U changed it to _promotionRef. V4.7 changes:
+ *      Y. ADMIN-EXECUTED REVIVE — revive() requires msg.sender == admin. The guardian
+ *         still queues it (the 7-day public notice is preserved); the admin executing
+ *         it IS the proof of presence that makes a revive useful. A pointless or stale
+ *         guardian execution can no longer re-freeze user exits.
+ *      Z. COMMENT CORRECTIONS — claimTarget / _claimMaturityRef natspec now correctly
+ *         names _promotionRef as the setter's promotion reference. No code change.
+ *
  *      CUSTODIAL BY DESIGN: the admin (Ledger cold wallet) has full control. That is
  *      intentional and is not a vulnerability. The security model defends against a
  *      compromised OPERATOR, and against admin/operator disappearance.
@@ -1033,9 +1048,9 @@ contract FlatIDVaultV4 {
     ///         only admin/operator actions advance (V4.4). A guardian revive() does NOT move
     ///         it, so a revive can never mature a redirect the first abandonment correctly
     ///         ignored; nor can an attacker "age" a fresh address by waiting inside the
-    ///         abandoned state. The SAME reference gates the setter's promotion of
-    ///         `current` to `previous` (V4.5, _claimMaturityRef), so `previous` is always
-    ///         an address this function would honor. While the vault is LIVE this measures
+    ///         abandoned state. The setter's promotion of `current` to `previous` is gated
+    ///         by _promotionRef() (V4.6) — the minimum of wall-clock and this reference — so
+    ///         `previous` is always an address this function would honor. While the vault is LIVE this measures
     ///         against the PROJECTED abandonment start — informational only; front-ends
     ///         should show setAt + CLAIM_ADDRESS_DELAY as the maturity date.
     function claimTarget(address user) public view returns (address) {
@@ -1176,10 +1191,14 @@ contract FlatIDVaultV4 {
     ///         lastLiveHeartbeat (V4.4): a guardian-only revive must never mature claim
     ///         addresses the first abandonment correctly ignored. V4.6: requires the
     ///         operator to be REVOKED — an unrevoked (possibly compromised) operator's first
-    ///         post-revive action would itself re-arm the maturity clock. Only the trusted
-    ///         admin can act after a revive (and re-appoint an operator). Runbook: void or
-    ///         roll back hostile claim writes BEFORE reviving.
-    function revive() external onlyGuardian nonReentrant {
+    ///         post-revive action would itself re-arm the maturity clock. V4.7: only the
+    ///         RETURNING ADMIN executes a revive (the guardian still queues it, keeping the
+    ///         7-day public notice) — a revive without the admin achieves nothing and would
+    ///         only re-freeze user exits for heartbeatInterval + RECOVERY_TIMELOCK. After a
+    ///         revive only the admin can act (and re-appoint an operator). Runbook: void or
+    ///         roll back hostile claim writes BEFORE the admin revives.
+    function revive() external nonReentrant {
+        require(msg.sender == admin, "Only the returning admin can execute a revive");
         require(isAbandoned(), "Not abandoned");
         require(!revived, "Revive already spent");
         require(reviveEta != 0, "Revive not queued");
@@ -1416,11 +1435,13 @@ contract FlatIDVaultV4 {
         return lanes[token].totalUserBalances <= IERC20(token).balanceOf(address(this));
     }
 
-    /// @dev THE one claim-maturity reference (V4.5): the clock only admin/operator liveness
-    ///      advances, plus one heartbeat interval (the projected abandonment start).
-    ///      Shared by claimTarget() and the claim setter's promotion rule, so an address
-    ///      can never be promoted to `previous` unless claimTarget would honor it —
-    ///      closing the revive-then-rewrite promotion residual of the round-4 M1 finding.
+    /// @dev THE claim-honoring reference (V4.5): the clock only admin/operator liveness
+    ///      advances, plus one heartbeat interval (the projected abandonment start). Used by
+    ///      claimTarget(). The setter's promotion rule uses _promotionRef() instead (V4.6:
+    ///      the minimum of wall-clock and this reference), so an address can never be
+    ///      promoted to `previous` unless claimTarget would honor it — closing the
+    ///      revive-then-rewrite promotion residual of the round-4 M1 finding without the
+    ///      V4.5 projection regression.
     function _claimMaturityRef() internal view returns (uint256) {
         return lastLiveHeartbeat + heartbeatInterval;
     }
