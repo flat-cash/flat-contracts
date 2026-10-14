@@ -470,9 +470,9 @@ contract FlatIDVaultV4 {
         emit LaneWithdrawLimitChanged(flat, 0, withdrawLimits[0]);
         emit LaneLedgerBudgetChanged(flat, 0, ledgerBudgets[0]);
         emit LaneWithdrawLimitChanged(save, 0, withdrawLimits[1]);
-        emit LaneLedgerBudgetChanged(save, 0, withdrawLimits[1]);
+        emit LaneLedgerBudgetChanged(save, 0, ledgerBudgets[1]);
         emit LaneWithdrawLimitChanged(sflat, 0, withdrawLimits[2]);
-        emit LaneLedgerBudgetChanged(sflat, 0, withdrawLimits[2]);
+        emit LaneLedgerBudgetChanged(sflat, 0, ledgerBudgets[2]);
     }
 
     // ═══════════════════════════════════════════════════════════════════
