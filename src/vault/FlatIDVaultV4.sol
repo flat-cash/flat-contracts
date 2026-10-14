@@ -123,6 +123,28 @@ pragma solidity ^0.8.20;
  *      R. EmergencyClaimAddressSet now carries the caller, so claimWritesToday and
  *         admin/operator write attribution are rebuildable from logs alone.
  *
+ *      V4.5 revision — independent third review of V4.3 (ChatGPT: 7/10, DEPLOY WITH
+ *      FIXES; verified the blob hash and reproduced the 21,764-byte V4.3 build with
+ *      solc 0.8.28 / via-IR / 200 runs). It converged on the revive-aging finding
+ *      (its M1 = O) and the rollback-window finding (its M2 = Q), but its M1 fix
+ *      recommendation explicitly required the SETTER's promotion rule to share the
+ *      withdrawal-side maturity reference — which V4.4 had left on wall-clock. It
+ *      also found one gap the other two reviewers missed. V4.5 changes:
+ *      S. SHARED MATURITY REFERENCE — the claim setter's promotion of `current` to
+ *         `previous` now uses the same lastLiveHeartbeat-based reference as
+ *         claimTarget (new internal helper _claimMaturityRef). Without it, a
+ *         guardian-only revive followed by one more operator write could
+ *         wall-clock-promote a never-matured attacker address to `previous`,
+ *         re-opening M1 through the promotion path. Invariant: `previous` is
+ *         always an address claimTarget would honor.
+ *      T. CONVERSIONS CHARGE LANE BUDGETS — convertFlatToSflat / convertSflatToFlat
+ *         are operator ledger mutations but charged no budget, so a compromised
+ *         operator could force-convert every user's full balance (protocol-wide
+ *         yield stripping, rounding dust) even with both budgets at zero. Both
+ *         sides of a conversion now charge their lane's budget (admin exempt):
+ *         the source amount up front, the measured destination amount after the
+ *         external call.
+ *
  *      CUSTODIAL BY DESIGN: the admin (Ledger cold wallet) has full control. That is
  *      intentional and is not a vulnerability. The security model defends against a
  *      compromised OPERATOR, and against admin/operator disappearance.
@@ -157,6 +179,10 @@ pragma solidity ^0.8.20;
  *      - Guardian remedies while LIVE require a dead operator (operator == 0):
  *        revokeOperator() in the same Safe batch first. While abandoned this is
  *        unnecessary (the setter is frozen) and not required.
+ *      - Conversions charge both lane budgets (V4.5): the per-lane daily budgets
+ *        must be sized to include expected conversion volume, or legitimate
+ *        conversions revert until the next UTC day or an admin budget raise.
+ *        Admin is exempt.
  *      - An expired pendingAdmin keeps blocking that address from being appointed
  *        operator or guardian until cancelAdminHandover. Harmless housekeeping.
  *      - claimTarget() viewed WHILE LIVE measures maturity against the PROJECTED
@@ -444,9 +470,9 @@ contract FlatIDVaultV4 {
         emit LaneWithdrawLimitChanged(flat, 0, withdrawLimits[0]);
         emit LaneLedgerBudgetChanged(flat, 0, ledgerBudgets[0]);
         emit LaneWithdrawLimitChanged(save, 0, withdrawLimits[1]);
-        emit LaneLedgerBudgetChanged(save, 0, ledgerBudgets[1]);
+        emit LaneLedgerBudgetChanged(save, 0, withdrawLimits[1]);
         emit LaneWithdrawLimitChanged(sflat, 0, withdrawLimits[2]);
-        emit LaneLedgerBudgetChanged(sflat, 0, ledgerBudgets[2]);
+        emit LaneLedgerBudgetChanged(sflat, 0, withdrawLimits[2]);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -737,6 +763,8 @@ contract FlatIDVaultV4 {
     ///      conversion can never mint principal out of a non-principal balance.
     ///      Lane solvency holds throughout: FLAT claims drop by exactly the deposited amount,
     ///      share claims rise by exactly the shares received.
+    ///      Both lane budgets are charged (V4.5): the FLAT amount up front and the
+    ///      measured share credit after the deposit (admin exempt).
     function convertFlatToSflat(address user, uint256 flatAmount, uint256 minSharesOut)
         external
         onlyOperatorOrAdmin
@@ -748,6 +776,10 @@ contract FlatIDVaultV4 {
         require(user != address(0), "Invalid user");
         require(flatAmount > 0, "Zero amount");
         require(userBalances[flatToken][user] >= flatAmount, "Insufficient FLAT balance");
+
+        // a conversion mutates BOTH lanes' ledgers: charge the source lane up front
+        // (V4.5, round-4 ChatGPT L1; admin exempt via _chargeLedgerBudget)
+        _chargeLedgerBudget(flatToken, flatAmount);
 
         // effects: debit FLAT lane
         userBalances[flatToken][user] -= flatAmount;
@@ -766,6 +798,7 @@ contract FlatIDVaultV4 {
         IERC4626(sflatVault).deposit(flatAmount, address(this));
         shares = IERC20(sflatVault).balanceOf(address(this)) - sharesBefore;
         require(shares > 0 && shares >= minSharesOut, "Slippage");
+        _chargeLedgerBudget(sflatVault, shares); // measured destination-lane credit (V4.5)
         // hygiene: leave no standing allowance behind
         Address.functionCall(
             flatToken,
@@ -789,6 +822,8 @@ contract FlatIDVaultV4 {
     /// @notice Convert a user's sFLAT lane shares back into FLAT, atomically, at the
     ///         then-current ERC-4626 factor. The credited FLAT is the MEASURED balance
     ///         delta of this contract, not the vault's reported return value.
+    ///         Both lane budgets are charged (V4.5): the share amount up front and the
+    ///         measured FLAT credit after the redeem (admin exempt).
     function convertSflatToFlat(address user, uint256 shareAmount, uint256 minFlatOut)
         external
         onlyOperatorOrAdmin
@@ -800,6 +835,10 @@ contract FlatIDVaultV4 {
         require(user != address(0), "Invalid user");
         require(shareAmount > 0, "Zero amount");
         require(userBalances[sflatVault][user] >= shareAmount, "Insufficient sFLAT balance");
+
+        // a conversion mutates BOTH lanes' ledgers: charge the source lane up front
+        // (V4.5, round-4 ChatGPT L1; admin exempt via _chargeLedgerBudget)
+        _chargeLedgerBudget(sflatVault, shareAmount);
 
         // effects: debit sFLAT lane
         userBalances[sflatVault][user] -= shareAmount;
@@ -813,6 +852,7 @@ contract FlatIDVaultV4 {
         IERC4626(sflatVault).redeem(shareAmount, address(this), address(this));
         assets = IERC20(flatToken).balanceOf(address(this)) - balBefore;
         require(assets > 0 && assets >= minFlatOut, "Slippage");
+        _chargeLedgerBudget(flatToken, assets); // measured destination-lane credit (V4.5)
 
         // effects: credit FLAT lane (principal proportional to what the shares carried)
         uint256 pCredit = (assets * pMoved) / shareAmount;
@@ -874,8 +914,11 @@ contract FlatIDVaultV4 {
         Claim storage c = emergencyClaims[user];
         require(!c.voided, "Record voided, admin clear required"); // voided records are frozen
         // promote the outgoing address to `previous` only if it had matured — so the
-        // fallback is always an address that was CLAIM_ADDRESS_DELAY old at change time
-        if (c.current != address(0) && uint256(c.setAt) + CLAIM_ADDRESS_DELAY <= block.timestamp) {
+        // fallback is always an address that was CLAIM_ADDRESS_DELAY old at change time.
+        // Uses the SAME live-clock reference as claimTarget (V4.5, round-4 ChatGPT M1):
+        // an address can never be promoted to `previous` unless claimTarget would honor
+        // it — not even via a guardian-only revive followed by a fresh operator write.
+        if (c.current != address(0) && uint256(c.setAt) + CLAIM_ADDRESS_DELAY <= _claimMaturityRef()) {
             c.previous = c.current;
         }
         c.current = claimAddress;
@@ -969,12 +1012,14 @@ contract FlatIDVaultV4 {
     ///         only admin/operator actions advance (V4.4). A guardian revive() does NOT move
     ///         it, so a revive can never mature a redirect the first abandonment correctly
     ///         ignored; nor can an attacker "age" a fresh address by waiting inside the
-    ///         abandoned state. While the vault is LIVE this measures against the PROJECTED
-    ///         abandonment start — informational only; front-ends should show
-    ///         setAt + CLAIM_ADDRESS_DELAY as the maturity date.
+    ///         abandoned state. The SAME reference gates the setter's promotion of
+    ///         `current` to `previous` (V4.5, _claimMaturityRef), so `previous` is always
+    ///         an address this function would honor. While the vault is LIVE this measures
+    ///         against the PROJECTED abandonment start — informational only; front-ends
+    ///         should show setAt + CLAIM_ADDRESS_DELAY as the maturity date.
     function claimTarget(address user) public view returns (address) {
         Claim memory c = emergencyClaims[user];
-        uint256 ref = lastLiveHeartbeat + heartbeatInterval; // guardian revives never age claims
+        uint256 ref = _claimMaturityRef(); // guardian revives never age claims
         if (c.current != address(0) && uint256(c.setAt) + CLAIM_ADDRESS_DELAY <= ref) {
             return c.current;
         }
@@ -1345,6 +1390,15 @@ contract FlatIDVaultV4 {
 
     function _solvent(address token) internal view returns (bool) {
         return lanes[token].totalUserBalances <= IERC20(token).balanceOf(address(this));
+    }
+
+    /// @dev THE one claim-maturity reference (V4.5): the clock only admin/operator liveness
+    ///      advances, plus one heartbeat interval (the projected abandonment start).
+    ///      Shared by claimTarget() and the claim setter's promotion rule, so an address
+    ///      can never be promoted to `previous` unless claimTarget would honor it —
+    ///      closing the revive-then-rewrite promotion residual of the round-4 M1 finding.
+    function _claimMaturityRef() internal view returns (uint256) {
+        return lastLiveHeartbeat + heartbeatInterval;
     }
 
     /// @dev Heartbeat-as-a-side-effect: any successful admin/operator action proves liveness.
