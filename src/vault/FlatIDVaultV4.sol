@@ -61,6 +61,35 @@ pragma solidity ^0.8.20;
  *         constructor emits cap/role events and checks token code; _touch() emits
  *         Heartbeat so lastHeartbeat is rebuildable from logs alone.
  *
+ *      V4.3 revision — second confirmation round (Claude 7/10, Grok 8/10; both DEPLOY
+ *      WITH FIXES). Both reviewers converged on one real bug: the guardian's remedy
+ *      clearEmergencyClaimAddress deleted the user's matured fallback along with the
+ *      attacker's fresh address — reopening the stolen-ledger-key exit it was meant
+ *      to close. Claude added: the self-exit still paid the ledger key for registered
+ *      users whose first address had not matured, and claim-address writes were
+ *      uncapped while the guardian's remedy worked one user at a time. V4.3 changes:
+ *      K. ROLLBACK, NOT DELETE — rollbackClaimAddresses(users) (batch; admin, or the
+ *         guardian at ANY time including abandoned/paused) restores each user's last
+ *         MATURED address as current with setAt = 0 (always matured) and clears
+ *         previous. The guardian can now only move a user BACK to an address that
+ *         user already held for 30+ days — never to nothing, never to a new address.
+ *         Full deletion (clearEmergencyClaimAddress) is admin-only, while live.
+ *      L. SELF-EXIT FALLBACK TIGHTENED — emergencyWithdraw falls back to msg.sender
+ *         only for users who NEVER had a claim record. A registered user whose
+ *         address has not matured reverts: stranded, not stolen.
+ *      M. CLAIM-WRITE RATE LIMIT — the operator can set at most dailyClaimWriteLimit
+ *         claim addresses per UTC day (0 = none; admin exempt). A mass redirect is
+ *         now slow and loud, and the batch rollback keeps the guardian's response
+ *         cheap (O(users) in ONE Safe transaction).
+ *      N. ROUND-3 LOWS — unpause() advances an expired pause first (the re-pause
+ *         cooldown is measured from the true expiry, not from a late unpause); claim
+ *         addresses reject ALL lane tokens, not just the vaults; revive() emits
+ *         Heartbeat so liveness stays rebuildable from logs; the constructor requires
+ *         heartbeatInterval < CLAIM_ADDRESS_DELAY, so a set-and-stop redirect can
+ *         NEVER mature before abandonment begins — any honored redirect spent at
+ *         least 30 days visible on-chain, and at least (CLAIM_ADDRESS_DELAY -
+ *         heartbeatInterval) of those with the vault verifiably alive.
+ *
  *      CUSTODIAL BY DESIGN: the admin (Ledger cold wallet) has full control. That is
  *      intentional and is not a vulnerability. The security model defends against a
  *      compromised OPERATOR, and against admin/operator disappearance.
@@ -78,6 +107,17 @@ pragma solidity ^0.8.20;
  *        begin (lane totals include live balances afterwards). Runbook requirement.
  *      - A user's FIRST claim-address registration takes CLAIM_ADDRESS_DELAY to mature;
  *        registration at onboarding makes this a non-issue (operational requirement).
+ *        If the vault is abandoned within those first 30 days, that user is STRANDED,
+ *        not stolen from: both exits revert until a revive lets the address mature.
+ *        Stranded-over-stolen is deliberate (round-3 trade-off).
+ *      - An expired pendingAdmin keeps blocking that address from being appointed
+ *        operator or guardian until cancelAdminHandover. Harmless housekeeping.
+ *      - claimTarget() viewed WHILE LIVE measures maturity against the PROJECTED
+ *        abandonment start; front-ends should display setAt + CLAIM_ADDRESS_DELAY
+ *        as the maturity date instead.
+ *      - A user who switches away from a compromised wallet keeps the OLD wallet
+ *        honored as `previous` for up to CLAIM_ADDRESS_DELAY. Users must be told
+ *        (docs/UI), and the guardian can roll back to it if the switch was hostile.
  */
 
 // Minimal IERC20 interface
@@ -154,6 +194,10 @@ contract FlatIDVaultV4 {
     bool public revived;       // one-time revive spent
     uint256 public reviveEta;  // set by queueRevive()
 
+    uint256 public dailyClaimWriteLimit; // operator cap on claim-address writes per UTC day (0 = none; admin exempt)
+    uint256 public lastClaimWriteResetDay;
+    uint256 public claimWritesToday;
+
     uint256 private _reentrancyLock; // 1 == unlocked, 2 == locked
 
     struct Lane {
@@ -177,6 +221,7 @@ contract FlatIDVaultV4 {
         address guardian;
         uint256 heartbeatInterval;
         uint256 maxPauseDuration;
+        uint256 dailyClaimWriteLimit;
         uint256[3] withdrawLimits;
         uint256[3] ledgerBudgets;
     }
@@ -224,7 +269,9 @@ contract FlatIDVaultV4 {
     event Converted(address indexed user, address indexed fromToken, address indexed toToken, uint256 fromAmount, uint256 toAmount);
 
     event EmergencyClaimAddressSet(address indexed user, address indexed claimAddress, address previousAddress);
+    event EmergencyClaimAddressRolledBack(address indexed user, address indexed restoredAddress, address indexed by);
     event EmergencyClaimAddressCleared(address indexed user, address indexed clearedBy);
+    event ClaimWriteLimitChanged(uint256 oldLimit, uint256 newLimit);
     event EmergencyWithdrawal(address indexed token, address indexed user, uint256 amount, address indexed to);
     event BalanceSeeded(address indexed token, address indexed user, uint256 amount);
     event SeedingCompleted();
@@ -294,6 +341,10 @@ contract FlatIDVaultV4 {
         );
         require(cfg.heartbeatInterval >= MIN_HEARTBEAT_INTERVAL, "Interval below minimum");
         require(cfg.heartbeatInterval <= MAX_HEARTBEAT_INTERVAL, "Interval above maximum");
+        // Structural invariant: with interval < CLAIM_ADDRESS_DELAY, a set-and-stop
+        // redirect can never mature before abandonment begins (setHeartbeatInterval
+        // can only decrease, so this holds for the contract's life).
+        require(cfg.heartbeatInterval < CLAIM_ADDRESS_DELAY, "Interval must be below claim delay");
         require(cfg.maxPauseDuration > 0, "Pause duration must be > 0");
         require(cfg.maxPauseDuration <= MAX_PAUSE_DURATION_CAP, "Pause duration exceeds cap");
 
@@ -305,6 +356,7 @@ contract FlatIDVaultV4 {
         guardian = cfg.guardian;
         heartbeatInterval = cfg.heartbeatInterval;
         maxPauseDuration = cfg.maxPauseDuration;
+        dailyClaimWriteLimit = cfg.dailyClaimWriteLimit;
         lastHeartbeat = block.timestamp;
         paused = false;
         seedingComplete = false;
@@ -316,6 +368,7 @@ contract FlatIDVaultV4 {
         emit OperatorChanged(address(0), cfg.operator);
         emit GuardianChanged(address(0), cfg.guardian);
         emit Heartbeat(address(0), block.timestamp);
+        emit ClaimWriteLimitChanged(0, cfg.dailyClaimWriteLimit);
 
         _initLanes(
             cfg.flatToken, cfg.saveToken, cfg.sflatVault,
@@ -730,12 +783,15 @@ contract FlatIDVaultV4 {
     ///         abandonment. Set by the backend on an authenticated FlatID request (the user
     ///         proves identity off-chain; the ledger key never signs anything). Setting or
     ///         changing this address is NOT a spend — funds can only ever go TO it.
-    /// @dev    AGING (V4.2, fixes the round-2 High): a compromised operator can no longer set a
-    ///         fresh address and then let the vault go silent — an address counts only if it was
-    ///         set at least CLAIM_ADDRESS_DELAY BEFORE abandonment began; otherwise the PREVIOUS
-    ///         matured address is used. A redirect attack therefore needs 30 days of visible
-    ///         on-chain change with the vault alive — during which the guardian can
-    ///         revokeOperator() and clearEmergencyClaimAddress(). Pause-gated.
+    /// @dev    AGING (V4.2): an address is honored only if it was set at least
+    ///         CLAIM_ADDRESS_DELAY (30 days) BEFORE abandonment began; otherwise the PREVIOUS
+    ///         matured address is used. Since the constructor forces heartbeatInterval <
+    ///         CLAIM_ADDRESS_DELAY, a set-and-stop redirect can never mature: any honored
+    ///         redirect spent ≥ 30 days visible on-chain, with the vault heartbeating for at
+    ///         least (CLAIM_ADDRESS_DELAY − heartbeatInterval) of them — during which the
+    ///         guardian can revokeOperator() and rollbackClaimAddresses(). Pause-gated, and
+    ///         the OPERATOR is rate-limited to dailyClaimWriteLimit writes per UTC day
+    ///         (V4.3; admin exempt), so a mass redirect is slow and loud.
     function setEmergencyClaimAddress(address user, address claimAddress)
         external
         onlyOperatorOrAdmin
@@ -745,7 +801,20 @@ contract FlatIDVaultV4 {
     {
         require(user != address(0), "Invalid user");
         require(claimAddress != address(0), "Invalid claim address");
-        require(claimAddress != address(this) && claimAddress != sflatVault, "Invalid claim address");
+        require(
+            claimAddress != address(this) && claimAddress != flatToken
+                && claimAddress != saveToken && claimAddress != sflatVault,
+            "Invalid claim address"
+        );
+        if (msg.sender != admin) {
+            uint256 currentDay = block.timestamp / 1 days;
+            if (currentDay > lastClaimWriteResetDay) {
+                lastClaimWriteResetDay = currentDay;
+                claimWritesToday = 0;
+            }
+            require(claimWritesToday < dailyClaimWriteLimit, "Exceeds daily claim writes");
+            claimWritesToday++;
+        }
         Claim storage c = emergencyClaims[user];
         // promote the outgoing address to `previous` only if it had matured — so the
         // fallback is always an address that was CLAIM_ADDRESS_DELAY old at change time
@@ -758,25 +827,50 @@ contract FlatIDVaultV4 {
         _touch();
     }
 
-    /// @notice Clear a user's claim record. Protective action against a redirect in progress:
-    ///         the guardian can clear ANY time (including while abandoned or paused — so a bad
-    ///         registration made just before silence can still be neutralized); the admin can
-    ///         clear only while the vault is live. After a clear, exits fall back to the user's
-    ///         own key (self-exit) until a new address matures.
-    function clearEmergencyClaimAddress(address user) external nonReentrant {
+    /// @notice Roll back hijacked claim records to each user's last MATURED address.
+    ///         Batch: the guardian answers a mass redirect with ONE Safe transaction.
+    ///         Callable by the guardian at ANY time (including abandoned/paused — a redirect
+    ///         made just before silence stays neutralizable) or by the admin while live.
+    /// @dev    V4.3, fixes the round-3 High: this REPLACES deletion as the guardian's remedy.
+    ///         A rollback can only move a user BACK to an address that user already held for
+    ///         30+ days (setAt = 0 is matured against any real abandonmentStart) — never to
+    ///         nothing, and never to an address the guardian chooses. Reverts per-user when
+    ///         no matured fallback exists (an immature `current` is already ignored by
+    ///         claimTarget, so such users need no action).
+    function rollbackClaimAddresses(address[] calldata users) external nonReentrant {
         require(msg.sender == admin || msg.sender == guardian, "Not admin or guardian");
+        require(users.length <= MAX_BATCH, "Batch too large");
         if (msg.sender == admin) {
             require(!isAbandoned(), "Vault is abandoned");
             _touch();
         }
+        for (uint256 i = 0; i < users.length; i++) {
+            Claim storage c = emergencyClaims[users[i]];
+            require(c.previous != address(0), "No matured fallback");
+            c.current = c.previous;
+            c.previous = address(0);
+            c.setAt = 0; // matured: 0 + CLAIM_ADDRESS_DELAY <= any real abandonmentStart()
+            emit EmergencyClaimAddressRolledBack(users[i], c.current, msg.sender);
+        }
+    }
+
+    /// @notice Full deletion of a claim record — ADMIN ONLY, while the vault is live.
+    ///         After a clear, the user has no record: self-exit falls back to their own
+    ///         ledger key and emergencyWithdrawTo reverts until a new address matures.
+    ///         Deliberately NOT a guardian power: deletion can strand a keyless user, so it
+    ///         belongs only to the trusted admin in a live vault (e.g. user-requested reset).
+    function clearEmergencyClaimAddress(address user) external onlyAdmin whenNotAbandoned nonReentrant {
         delete emergencyClaims[user];
         emit EmergencyClaimAddressCleared(user, msg.sender);
+        _touch();
     }
 
     /// @notice The claim address that is honored RIGHT NOW: the current one only if it matured
     ///         before abandonment began; otherwise the previous matured one; else zero.
     /// @dev    Maturity is measured against abandonmentStart() (not now), so an attacker cannot
-    ///         "age" a fresh address by waiting inside the abandoned state.
+    ///         "age" a fresh address by waiting inside the abandoned state. While the vault is
+    ///         LIVE this measures against the PROJECTED abandonment start — informational only;
+    ///         front-ends should show setAt + CLAIM_ADDRESS_DELAY as the maturity date.
     function claimTarget(address user) public view returns (address) {
         Claim memory c = emergencyClaims[user];
         if (c.current != address(0) && uint256(c.setAt) + CLAIM_ADDRESS_DELAY <= abandonmentStart()) {
@@ -786,16 +880,21 @@ contract FlatIDVaultV4 {
     }
 
     /// @notice After abandonment, exit for a user who holds their ledger key. Pays the MATURED
-    ///         claim address when one exists (V4.2, fixes the round-2 High: stolen server-side
-    ///         ledger keys can no longer beat a registered claim address); falls back to
-    ///         msg.sender when no address was ever registered.
+    ///         claim address when one exists; stolen server-side ledger keys alone never beat
+    ///         it. Falls back to msg.sender ONLY for a user who NEVER had a claim record
+    ///         (V4.3): a registered user whose address has not matured reverts — stranded,
+    ///         not stolen (a revive lets the address mature and restores the exit).
     ///         Phase 1 (before RECOVERY_TIMELOCK): claim = min(balance, principal, available).
     ///         Phase 2 (after RECOVERY_TIMELOCK): claim = min(FULL balance, available) —
     ///         non-principal balances (rewards etc.) are no longer stranded forever.
     ///         No role gate and no pause gate; cannot be disabled.
     function emergencyWithdraw(address token) external nonReentrant {
         address to = claimTarget(msg.sender);
-        if (to == address(0)) to = msg.sender;
+        if (to == address(0)) {
+            Claim memory c = emergencyClaims[msg.sender];
+            require(c.current == address(0) && c.previous == address(0), "Claim address not matured");
+            to = msg.sender;
+        }
         _emergencyWithdraw(token, msg.sender, to);
     }
 
@@ -911,6 +1010,7 @@ contract FlatIDVaultV4 {
         reviveEta = 0;
         lastHeartbeat = block.timestamp;
         emit Revived(msg.sender, block.timestamp);
+        emit Heartbeat(msg.sender, block.timestamp); // liveness reset, rebuildable from logs
     }
 
     /// @notice Emergency brake on a compromised operator: the guardian can revoke the
@@ -1087,6 +1187,15 @@ contract FlatIDVaultV4 {
         _touch();
     }
 
+    /// @notice Set the operator's daily cap on claim-address writes (count per UTC day).
+    ///         0 == operator cannot set claim addresses at all. Admin is exempt.
+    ///         Set at birth via the constructor.
+    function setDailyClaimWriteLimit(uint256 newLimit) external onlyAdmin whenNotAbandoned nonReentrant {
+        emit ClaimWriteLimitChanged(dailyClaimWriteLimit, newLimit);
+        dailyClaimWriteLimit = newLimit;
+        _touch();
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // PAUSE / UNPAUSE (GUARDIAN — BOUNDED, CANNOT BE EXTENDED WHILE ACTIVE)
     // ═══════════════════════════════════════════════════════════════════
@@ -1106,6 +1215,7 @@ contract FlatIDVaultV4 {
     }
 
     function unpause() external onlyGuardian nonReentrant {
+        _advancePauseExpiry(); // a naturally expired pause is already over — nothing to unpause
         require(paused, "Not paused"); // no silent re-arming of the re-pause cooldown
         paused = false;
         lastPauseExpiredAt = block.timestamp;
