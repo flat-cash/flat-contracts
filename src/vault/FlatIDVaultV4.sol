@@ -42,17 +42,42 @@ pragma solidity ^0.8.20;
  *         nonReentrant on every state-changing function; PrincipalChanged event and
  *         uniform balance events so the backend can rebuild ALL state from logs.
  *
+ *      V4.2 revision — confirmation round (Claude 6/10, Grok 7/10; both DEPLOY WITH FIXES).
+ *      Both reviewers independently found the same High: the V4.1 claim-address setter was
+ *      an uncapped, un-pause-gated operator write that could redirect the WHOLE vault after
+ *      abandonment. Claude found a second High: the self-exit paid msg.sender, so stolen
+ *      server-side ledger keys beat registered claim addresses. V4.2 changes:
+ *      H. CLAIM-ADDRESS AGING — a claim address is honored only if it was set at least
+ *         CLAIM_ADDRESS_DELAY (30 days) BEFORE abandonment began; otherwise the previous
+ *         matured address is used. A redirect therefore requires keeping the vault alive
+ *         for 30 days with the change visible on-chain — during which the guardian can
+ *         revokeOperator() and clearEmergencyClaimAddress(). Setter is pause-gated and
+ *         rejects the vault itself and the sFLAT vault as destinations.
+ *      I. SELF-EXIT ROUTES TO THE CLAIM ADDRESS — emergencyWithdraw pays the matured
+ *         claim address when one exists; stolen ledger keys alone no longer suffice.
+ *      J. ROUND-2 LOWS — measured share delta in convertFlatToSflat (mirrors the L-5
+ *         redeem fix) and assets > 0 on redeem; unpause() requires an active pause;
+ *         acceptAdmin re-checks distinct roles and proposals expire after 30 days;
+ *         constructor emits cap/role events and checks token code; _touch() emits
+ *         Heartbeat so lastHeartbeat is rebuildable from logs alone.
+ *
  *      CUSTODIAL BY DESIGN: the admin (Ledger cold wallet) has full control. That is
  *      intentional and is not a vulnerability. The security model defends against a
  *      compromised OPERATOR, and against admin/operator disappearance.
  *
- *      KNOWN ACCEPTED TRADE-OFFS (documented, not bugs):
+ *      KNOWN ACCEPTED TRADE-OFFS (documented, not bugs — confirmed by both reviewers):
  *      - Daily caps reset on UTC-day boundaries: up to 2x the cap can move within two
- *        blocks around midnight. A rolling window was considered and rejected (complexity).
+ *        blocks around midnight. Caps must also be sized for cross-lane exposure:
+ *        FLAT value can leave through BOTH the FLAT and sFLAT lane caps the same day.
  *      - batchSettleTransfer is all-or-nothing: one stale entry reverts the batch. The
  *        backend pre-validates batches and splits on failure.
  *      - Emergency withdrawal is first-come-first-served if a lane is underfunded (which
- *        can only happen via seeding mistakes or an external sFLAT loss).
+ *        can only happen via a seeding mistake; an external sFLAT loss reduces share VALUE
+ *        pro-rata but cannot underfund the share-denominated lane itself).
+ *      - finalizeSeed's exact-total check is meaningful only if run BEFORE live deposits
+ *        begin (lane totals include live balances afterwards). Runbook requirement.
+ *      - A user's FIRST claim-address registration takes CLAIM_ADDRESS_DELAY to mature;
+ *        registration at onboarding makes this a non-issue (operational requirement).
  */
 
 // Minimal IERC20 interface
@@ -99,6 +124,8 @@ contract FlatIDVaultV4 {
     uint256 public constant MAX_BATCH = 200;
     uint256 public constant RECOVERY_TIMELOCK = 30 days; // after abandonment, before recoverSurplus / phase-2 exit
     uint256 public constant REVIVE_TIMELOCK = 7 days;    // public delay on the one-time revive
+    uint256 public constant CLAIM_ADDRESS_DELAY = 30 days; // a claim address must be this old (vs abandonment start) to be honored
+    uint256 public constant PENDING_ADMIN_TTL = 30 days; // admin handover proposals expire
 
     // ═══════════════════════════════════════════════════════════════════
     // STATE VARIABLES
@@ -106,6 +133,7 @@ contract FlatIDVaultV4 {
 
     address public admin;
     address public pendingAdmin; // two-step admin handover
+    uint256 public pendingAdminEta; // proposal expires at this timestamp
     address public operator;
     address public guardian; // protocol Safe multisig
 
@@ -157,10 +185,16 @@ contract FlatIDVaultV4 {
     mapping(address => mapping(address => uint256)) public userBalances; // token => user => balance
     mapping(address => mapping(address => uint256)) public principalOf;  // token => user => principal
 
-    /// @notice User-registered destination for abandoned-vault exits. Set by the backend on an
-    ///         authenticated FlatID request (mirrors the exit-address concept). Funds can only
-    ///         ever go TO this address via emergencyWithdrawTo — setting it is not a spend.
-    mapping(address => address) public emergencyClaimAddress; // ledger user => self-custody wallet
+    /// @notice Self-custody destination for abandoned-vault exits, with AGING: an address is
+    ///         honored only if set at least CLAIM_ADDRESS_DELAY before abandonment began;
+    ///         otherwise the previous matured address is used. Set by the backend on an
+    ///         authenticated FlatID request. Setting it is NOT a spend — funds only go TO it.
+    struct Claim {
+        address current;   // most recently set address
+        address previous;  // last MATURED address (fallback if current is too new)
+        uint64 setAt;      // when current was set
+    }
+    mapping(address => Claim) public emergencyClaims; // ledger user => claim record
 
     // ═══════════════════════════════════════════════════════════════════
     // EVENTS
@@ -189,7 +223,8 @@ contract FlatIDVaultV4 {
     event SettleTransfer(address indexed token, address indexed from, address indexed to, uint256 amount, uint256 principalMoved);
     event Converted(address indexed user, address indexed fromToken, address indexed toToken, uint256 fromAmount, uint256 toAmount);
 
-    event EmergencyClaimAddressSet(address indexed user, address indexed claimAddress);
+    event EmergencyClaimAddressSet(address indexed user, address indexed claimAddress, address previousAddress);
+    event EmergencyClaimAddressCleared(address indexed user, address indexed clearedBy);
     event EmergencyWithdrawal(address indexed token, address indexed user, uint256 amount, address indexed to);
     event BalanceSeeded(address indexed token, address indexed user, uint256 amount);
     event SeedingCompleted();
@@ -247,6 +282,8 @@ contract FlatIDVaultV4 {
             "Lane tokens must be distinct"
         );
         require(cfg.sflatVault.code.length > 0, "sFLAT vault has no code");
+        require(cfg.flatToken.code.length > 0, "FLAT token has no code");
+        require(cfg.saveToken.code.length > 0, "SAVE token has no code");
         require(IERC4626(cfg.sflatVault).asset() == cfg.flatToken, "sFLAT vault asset is not FLAT");
         require(cfg.admin != address(0), "Invalid admin");
         require(cfg.operator != address(0), "Invalid operator");
@@ -275,6 +312,11 @@ contract FlatIDVaultV4 {
         reviveEta = 0;
         _reentrancyLock = 1;
 
+        emit AdminChanged(address(0), cfg.admin);
+        emit OperatorChanged(address(0), cfg.operator);
+        emit GuardianChanged(address(0), cfg.guardian);
+        emit Heartbeat(address(0), block.timestamp);
+
         _initLanes(
             cfg.flatToken, cfg.saveToken, cfg.sflatVault,
             cfg.withdrawLimits, cfg.ledgerBudgets
@@ -282,7 +324,8 @@ contract FlatIDVaultV4 {
     }
 
     /// @dev Constructor helper (keeps the constructor within the EVM stack limit).
-    ///      Arrays ordered [FLAT, SAVE, sFLAT].
+    ///      Arrays ordered [FLAT, SAVE, sFLAT]. Emits cap events so the birth
+    ///      configuration is auditable on Etherscan.
     function _initLanes(
         address flat, address save, address sflat,
         uint256[3] memory withdrawLimits, uint256[3] memory ledgerBudgets
@@ -293,6 +336,12 @@ contract FlatIDVaultV4 {
         lanes[save].dailyLedgerBudget = ledgerBudgets[1];
         lanes[sflat].dailyWithdrawLimit = withdrawLimits[2];
         lanes[sflat].dailyLedgerBudget = ledgerBudgets[2];
+        emit LaneWithdrawLimitChanged(flat, 0, withdrawLimits[0]);
+        emit LaneLedgerBudgetChanged(flat, 0, ledgerBudgets[0]);
+        emit LaneWithdrawLimitChanged(save, 0, withdrawLimits[1]);
+        emit LaneLedgerBudgetChanged(save, 0, ledgerBudgets[1]);
+        emit LaneWithdrawLimitChanged(sflat, 0, withdrawLimits[2]);
+        emit LaneLedgerBudgetChanged(sflat, 0, ledgerBudgets[2]);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -601,13 +650,16 @@ contract FlatIDVaultV4 {
         uint256 pMoved = flatAmount < pFrom ? flatAmount : pFrom;
         principalOf[flatToken][user] = pFrom - pMoved;
 
-        // interaction: deposit into the live sFLAT vault (vault holds the shares)
+        // interaction: deposit into the live sFLAT vault (vault holds the shares),
+        // then credit the MEASURED share delta, not deposit()'s reported return value
         Address.functionCall(
             flatToken,
             abi.encodeWithSelector(IERC20.approve.selector, sflatVault, flatAmount)
         );
-        shares = IERC4626(sflatVault).deposit(flatAmount, address(this));
-        require(shares >= minSharesOut, "Slippage");
+        uint256 sharesBefore = IERC20(sflatVault).balanceOf(address(this));
+        IERC4626(sflatVault).deposit(flatAmount, address(this));
+        shares = IERC20(sflatVault).balanceOf(address(this)) - sharesBefore;
+        require(shares > 0 && shares >= minSharesOut, "Slippage");
         // hygiene: leave no standing allowance behind
         Address.functionCall(
             flatToken,
@@ -654,7 +706,7 @@ contract FlatIDVaultV4 {
         uint256 balBefore = IERC20(flatToken).balanceOf(address(this));
         IERC4626(sflatVault).redeem(shareAmount, address(this), address(this));
         assets = IERC20(flatToken).balanceOf(address(this)) - balBefore;
-        require(assets >= minFlatOut, "Slippage");
+        require(assets > 0 && assets >= minFlatOut, "Slippage");
 
         // effects: credit FLAT lane (principal proportional to what the shares carried)
         uint256 pCredit = (assets * pMoved) / shareAmount;
@@ -678,35 +730,83 @@ contract FlatIDVaultV4 {
     ///         abandonment. Set by the backend on an authenticated FlatID request (the user
     ///         proves identity off-chain; the ledger key never signs anything). Setting or
     ///         changing this address is NOT a spend — funds can only ever go TO it.
+    /// @dev    AGING (V4.2, fixes the round-2 High): a compromised operator can no longer set a
+    ///         fresh address and then let the vault go silent — an address counts only if it was
+    ///         set at least CLAIM_ADDRESS_DELAY BEFORE abandonment began; otherwise the PREVIOUS
+    ///         matured address is used. A redirect attack therefore needs 30 days of visible
+    ///         on-chain change with the vault alive — during which the guardian can
+    ///         revokeOperator() and clearEmergencyClaimAddress(). Pause-gated.
     function setEmergencyClaimAddress(address user, address claimAddress)
         external
         onlyOperatorOrAdmin
+        whenNotPaused
         whenNotAbandoned
         nonReentrant
     {
         require(user != address(0), "Invalid user");
         require(claimAddress != address(0), "Invalid claim address");
-        emergencyClaimAddress[user] = claimAddress;
-        emit EmergencyClaimAddressSet(user, claimAddress);
+        require(claimAddress != address(this) && claimAddress != sflatVault, "Invalid claim address");
+        Claim storage c = emergencyClaims[user];
+        // promote the outgoing address to `previous` only if it had matured — so the
+        // fallback is always an address that was CLAIM_ADDRESS_DELAY old at change time
+        if (c.current != address(0) && uint256(c.setAt) + CLAIM_ADDRESS_DELAY <= block.timestamp) {
+            c.previous = c.current;
+        }
+        c.current = claimAddress;
+        c.setAt = uint64(block.timestamp);
+        emit EmergencyClaimAddressSet(user, claimAddress, c.previous);
         _touch();
     }
 
-    /// @notice After abandonment, a user who holds their ledger key withdraws to themselves.
+    /// @notice Clear a user's claim record. Protective action against a redirect in progress:
+    ///         the guardian can clear ANY time (including while abandoned or paused — so a bad
+    ///         registration made just before silence can still be neutralized); the admin can
+    ///         clear only while the vault is live. After a clear, exits fall back to the user's
+    ///         own key (self-exit) until a new address matures.
+    function clearEmergencyClaimAddress(address user) external nonReentrant {
+        require(msg.sender == admin || msg.sender == guardian, "Not admin or guardian");
+        if (msg.sender == admin) {
+            require(!isAbandoned(), "Vault is abandoned");
+            _touch();
+        }
+        delete emergencyClaims[user];
+        emit EmergencyClaimAddressCleared(user, msg.sender);
+    }
+
+    /// @notice The claim address that is honored RIGHT NOW: the current one only if it matured
+    ///         before abandonment began; otherwise the previous matured one; else zero.
+    /// @dev    Maturity is measured against abandonmentStart() (not now), so an attacker cannot
+    ///         "age" a fresh address by waiting inside the abandoned state.
+    function claimTarget(address user) public view returns (address) {
+        Claim memory c = emergencyClaims[user];
+        if (c.current != address(0) && uint256(c.setAt) + CLAIM_ADDRESS_DELAY <= abandonmentStart()) {
+            return c.current;
+        }
+        return c.previous;
+    }
+
+    /// @notice After abandonment, exit for a user who holds their ledger key. Pays the MATURED
+    ///         claim address when one exists (V4.2, fixes the round-2 High: stolen server-side
+    ///         ledger keys can no longer beat a registered claim address); falls back to
+    ///         msg.sender when no address was ever registered.
     ///         Phase 1 (before RECOVERY_TIMELOCK): claim = min(balance, principal, available).
     ///         Phase 2 (after RECOVERY_TIMELOCK): claim = min(FULL balance, available) —
     ///         non-principal balances (rewards etc.) are no longer stranded forever.
     ///         No role gate and no pause gate; cannot be disabled.
     function emergencyWithdraw(address token) external nonReentrant {
-        _emergencyWithdraw(token, msg.sender, msg.sender);
+        address to = claimTarget(msg.sender);
+        if (to == address(0)) to = msg.sender;
+        _emergencyWithdraw(token, msg.sender, to);
     }
 
     /// @notice For users who do NOT hold their ledger key (the normal FlatID case): after
     ///         abandonment, ANYONE can trigger the exit for `user`, and funds go ONLY to the
-    ///         pre-registered emergencyClaimAddress. Unusable if no address was registered —
-    ///         users should register one while the protocol is live (mirrors exit address).
+    ///         matured claim address. Reverts if none matured — users should register one
+    ///         while the protocol is live (registration at onboarding makes the 30-day
+    ///         first-registration delay a non-issue).
     function emergencyWithdrawTo(address token, address user) external nonReentrant {
-        address to = emergencyClaimAddress[user];
-        require(to != address(0), "No claim address registered");
+        address to = claimTarget(user);
+        require(to != address(0), "No matured claim address");
         _emergencyWithdraw(token, user, to);
     }
 
@@ -892,10 +992,13 @@ contract FlatIDVaultV4 {
 
     /// @notice Two-step admin handover: step 1 proposes, step 2 the new key accepts.
     ///         A typo in step 1 is harmless — the current admin keeps control.
+    ///         Proposals EXPIRE after PENDING_ADMIN_TTL so a forgotten proposal cannot be
+    ///         accepted by a key that has since changed hands (or become operator/guardian).
     function proposeAdmin(address newAdmin) external onlyAdmin whenNotAbandoned nonReentrant {
         require(newAdmin != address(0), "Invalid address");
         require(newAdmin != operator && newAdmin != guardian, "Roles must be distinct");
         pendingAdmin = newAdmin;
+        pendingAdminEta = block.timestamp + PENDING_ADMIN_TTL;
         emit AdminChangeProposed(admin, newAdmin);
         _touch();
     }
@@ -903,15 +1006,20 @@ contract FlatIDVaultV4 {
     function acceptAdmin() external nonReentrant {
         require(msg.sender == pendingAdmin, "Not pending admin");
         require(!isAbandoned(), "Vault is abandoned");
+        require(block.timestamp <= pendingAdminEta, "Proposal expired");
+        // re-check distinctness at ACCEPT time: operator/guardian may have changed since the proposal
+        require(msg.sender != operator && msg.sender != guardian, "Roles must be distinct");
         emit AdminChanged(admin, pendingAdmin);
         admin = pendingAdmin;
         pendingAdmin = address(0);
+        pendingAdminEta = 0;
         lastHeartbeat = block.timestamp; // the new key proves liveness
         emit Heartbeat(msg.sender, block.timestamp);
     }
 
     function cancelAdminHandover() external onlyAdmin whenNotAbandoned nonReentrant {
         pendingAdmin = address(0);
+        pendingAdminEta = 0;
         emit AdminChangeProposed(admin, address(0));
         _touch();
     }
@@ -919,6 +1027,7 @@ contract FlatIDVaultV4 {
     function setOperator(address newOperator) external onlyAdmin whenNotAbandoned nonReentrant {
         require(newOperator != address(0), "Invalid address");
         require(newOperator != admin && newOperator != guardian, "Roles must be distinct");
+        require(newOperator != pendingAdmin, "Pending admin"); // would break handover distinctness
         emit OperatorChanged(operator, newOperator);
         operator = newOperator;
         _touch();
@@ -927,6 +1036,7 @@ contract FlatIDVaultV4 {
     function setGuardian(address newGuardian) external onlyAdmin whenNotAbandoned nonReentrant {
         require(newGuardian != address(0), "Invalid address");
         require(newGuardian != admin && newGuardian != operator, "Roles must be distinct");
+        require(newGuardian != pendingAdmin, "Pending admin"); // would break handover distinctness
         emit GuardianChanged(guardian, newGuardian);
         guardian = newGuardian;
         _touch();
@@ -996,6 +1106,7 @@ contract FlatIDVaultV4 {
     }
 
     function unpause() external onlyGuardian nonReentrant {
+        require(paused, "Not paused"); // no silent re-arming of the re-pause cooldown
         paused = false;
         lastPauseExpiredAt = block.timestamp;
         pauseExpiresAt = 0;
@@ -1015,8 +1126,10 @@ contract FlatIDVaultV4 {
     }
 
     /// @dev Heartbeat-as-a-side-effect: any successful admin/operator action proves liveness.
+    ///      Emits Heartbeat so lastHeartbeat is rebuildable from event logs alone.
     function _touch() internal {
         lastHeartbeat = block.timestamp;
+        emit Heartbeat(msg.sender, block.timestamp);
     }
 
     /// @dev Charge the operator's per-lane daily ledger budget. Admin is exempt.
